@@ -1,0 +1,17 @@
+[package]
+name = "my_gfx"
+version = "0.1.0"
+authors = ["AlekseiMurzanev <alex_murz@icloud.com>"]
+edition = "2018"
+publish = false
+
+[dependencies]
+cgmath = "0.17"
+png = "0.15.0"
+time = "0.1.38"
+blend = "0.6.1"
+
+vulkano = "*"
+vulkano-shaders = "*"
+winit = "*"
+vulkano-win = "*"
