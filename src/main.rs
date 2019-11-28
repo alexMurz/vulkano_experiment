@@ -1,6 +1,5 @@
 
 
-use vulkano::buffer::cpu_pool::CpuBufferPool;
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, BufferAccess};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
 use vulkano::descriptor::descriptor_set::{PersistentDescriptorSet, FixedSizeDescriptorSet};
@@ -31,14 +30,13 @@ use std::time::Instant;
 use vulkano::descriptor::DescriptorSet;
 
 mod graphics;
-use graphics::renderer;
+use graphics::{ old_renderer, renderer };
 use crate::graphics::Camera;
-use crate::graphics::renderer::RendererState;
+use crate::graphics::old_renderer::RendererState;
+use graphics::renderer::Renderer;
 
 extern crate blend;
-use blend::{
-    Blend
-};
+use blend::{Blend};
 use std::any::Any;
 
 mod scene;
@@ -106,7 +104,7 @@ pub fn start() {
         physical, physical.supported_features(), &device_ext, [(queue_family, 0.5)].iter().cloned()
     ).unwrap();
 
-    let queue = queues.next().unwrap();
+    let main_queue = queues.next().unwrap();
 
     let (mut swapchain, mut images) = {
         let caps = surface.capabilities(physical).unwrap();
@@ -119,18 +117,50 @@ pub fn start() {
         let image_count = caps.min_image_count;
 
         Swapchain::new(device.clone(), surface.clone(), image_count, format, dimensions, 1,
-                       usage, &queue, SurfaceTransform::Identity, alpha, PresentMode::Fifo, true, None).unwrap()
+                       usage, &main_queue, SurfaceTransform::Identity, alpha, PresentMode::Fifo, true, None).unwrap()
     };
 
+//    let mut renderer = renderer::Renderer::new(main_queue.clone(), &mut queues, swapchain.format());
 
+    let mut renderer = renderer::Renderer::new(main_queue.clone(), swapchain.format());
 
-    let mut renderer = {
+    let mut camera = {
         let projection = cgmath::perspective(cgmath::Deg(60.0), 1.0, 0.01, 100.0);
-        let mut camera = Camera::new(projection);
-        camera.pos = [0.0, 0.0, -3.0];
-        renderer::Renderer::new(queue.clone(), swapchain.format(), camera)
+        Camera::new(projection)
     };
-    let mut scene = scene::Scene::new(queue.clone(), renderer.deferred_subpass(), renderer.shadow_subpass());
+    let (mut floor_object, mut test_object) = {
+        use graphics::object::{ MeshData, Vertex3D, ObjectInstance };
+
+        let floor_size = 5.0;
+        let floor_mesh = renderer.generate_mesh_from_data(vec![
+            Vertex3D::from_position(-floor_size, 0.0, -floor_size),
+            Vertex3D::from_position(-floor_size, 0.0,  floor_size),
+            Vertex3D::from_position( floor_size, 0.0, -floor_size),
+
+            Vertex3D::from_position( floor_size, 0.0, -floor_size),
+            Vertex3D::from_position(-floor_size, 0.0,  floor_size),
+            Vertex3D::from_position( floor_size, 0.0,  floor_size),
+        ]);
+        let obj_mesh = renderer.generate_mesh_from_data(vec![
+            Vertex3D::from_position(-0.5, -0.5, 0.0),
+            Vertex3D::from_position(-0.5,  0.5, 0.0).color(0.0, 1.0, 0.0, 1.0),
+            Vertex3D::from_position( 0.5, -0.5, 0.0),
+        ]);
+        (
+            ObjectInstance {
+                mesh_data: Arc::new(floor_mesh),
+                pos: [0.0, 2.0, 0.0],
+                scl: [1.0, 1.0, 1.0],
+                rot: [0.0, 0.0, 0.0]
+            },
+            ObjectInstance {
+                mesh_data: Arc::new(obj_mesh),
+                pos: [0.0, 0.0, 0.0],
+                scl: [1.0, 1.0, 1.0],
+                rot: [0.0, 0.0, 0.0]
+            }
+        )
+    };
 
     let mut prev_sync = Box::new(sync::now(device.clone())) as Box<dyn GpuFuture>;
     let mut running = true;
@@ -159,6 +189,9 @@ pub fn start() {
         let delta = (delta_ns as f64 / 1e9f64) as f32;
 
         /* Update */{
+            t += delta;
+            test_object.set_pos(t.sin(), 0.0, 0.0);
+
             let m = move_speed * delta;
 
             let right = if button_states[Button::A] { -m }
@@ -172,16 +205,12 @@ pub fn start() {
             if button_states[Button::Q] { rot[1] -= delta * 90.0; }
             if button_states[Button::E] { rot[1] += delta * 90.0; }
 
-            renderer.camera.move_by(forward, right, 0.0);
-//            renderer.camera.set_pos_arr(pos);
-            renderer.camera.set_angle(rot);
+            camera.move_by(forward, right, 0.0);
+            camera.set_angle(rot);
         }
-//        renderer.camera.set_pos(pos_x, 0.0, 0.0);
 
-        scene.act(delta);
+//        scene.act(delta);
 
-//        println!("FPS: {}", (1.0 / delta) as u32);
-        println!("Cam: {:?}", renderer.camera.pos);
 
         prev_sync.cleanup_finished();
 
@@ -207,20 +236,27 @@ pub fn start() {
             Err(err) => panic!("{:?}", err)
         };
 
+//        let future = renderer.render(
+//            prev_sync.join(acquire_future),
+//            images[image_num].clone(),
+//            |state| {
+//                match state {
+//                    RendererState::Drawing(mut executor) => scene.render(&mut executor),
+//                    RendererState::Shadow(mut executor) => scene.render_shadows(&mut executor),
+//                    _ => ()
+//                };
+//            },
+//        );
+
+        renderer.set_view_projection(camera.get_view_projection());
         let future = renderer.render(
             prev_sync.join(acquire_future),
             images[image_num].clone(),
-            |state| {
-                match state {
-                    RendererState::Drawing(mut executor) => scene.render(&mut executor),
-                    RendererState::Shadow(mut executor) => scene.render_shadows(&mut executor),
-                    _ => ()
-                };
-            },
+            vec![&floor_object, &test_object].as_ref()
         );
 
         let future = future
-            .then_swapchain_present(queue.clone(), swapchain.clone(), image_num)
+            .then_swapchain_present(main_queue.clone(), swapchain.clone(), image_num)
             .then_signal_fence_and_flush();
 
         match future {
@@ -241,7 +277,6 @@ pub fn start() {
 
 
         event_loop.poll_events(|event| {
-
             match event {
                 winit::Event::WindowEvent { event, .. } => {
                     match event {
@@ -263,7 +298,7 @@ pub fn start() {
                         winit::WindowEvent::Resized(size) => {
                             let aspect = size.width as f32 / size.height as f32;
                             let projection = cgmath::perspective(cgmath::Deg(60.0), aspect, 0.01, 50.0);
-                            renderer.camera.set_projection(projection);
+                            camera.set_projection(projection);
                         },
                         _ => ()
                     }

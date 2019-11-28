@@ -1,16 +1,10 @@
 
+pub mod old_renderer;
+pub mod object;
 pub mod renderer;
+pub mod light;
 
 use cgmath::{Matrix4, SquareMatrix, Vector3, Deg, Vector4, Matrix3};
-use vulkano::buffer::BufferAccess;
-use std::sync::Arc;
-
-
-pub struct Object {
-    model_matrix: Matrix4<f32>,
-    vbo: Arc<dyn BufferAccess + Send + Sync + 'static>,
-    ibo: Option<Arc<dyn BufferAccess + Send + Sync + 'static>>
-}
 
 pub struct Camera {
     pub pos: [f32; 3],

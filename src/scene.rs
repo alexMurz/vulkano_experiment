@@ -1,5 +1,5 @@
 
-use vulkano::buffer::BufferUsage;
+use vulkano::buffer::{BufferUsage, ImmutableBuffer, BufferAccess};
 use vulkano::buffer::CpuAccessibleBuffer;
 use vulkano::command_buffer::AutoCommandBuffer;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
@@ -12,11 +12,12 @@ use vulkano::pipeline::GraphicsPipelineAbstract;
 use vulkano::pipeline::viewport::Viewport;
 
 use std::sync::Arc;
-use crate::graphics::renderer::{RendererDrawable, RenderExecutor, ShadowExecutor};
+use crate::graphics::old_renderer::{RenderExecutor, ShadowExecutor};
 
 use cgmath::{Matrix4, SquareMatrix, Vector3, vec3};
 use blend::Blend;
 use crate::loader;
+use vulkano::sync::GpuFuture;
 
 
 #[derive(Default, Debug, Clone)]
@@ -115,8 +116,8 @@ void main() {
 
 pub struct Scene {
     queue: Arc<Queue>,
-    floor_vbo: Arc<CpuAccessibleBuffer<[Vertex]>>,
-    object_vbo: Arc<CpuAccessibleBuffer<[Vertex]>>,
+    floor_vbo: Arc<dyn BufferAccess + Send + Sync>,
+    object_vbo: Arc<dyn BufferAccess + Send + Sync>,
 
     pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
     shadow_pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
@@ -157,16 +158,15 @@ impl Scene {
 
             let s = 0.95f32;
             let z = 0.0;
-            CpuAccessibleBuffer::from_iter(queue.device().clone(), BufferUsage::all(), vertices.iter().cloned()
-//                                           [
-//                Vertex { position: [-s, -s, z], color: [1.0, 0.0, 1.0], normal: [0.0, 0.0,-1.0] },
-//                Vertex { position: [-s,  s, z], color: [1.0, 0.0, 1.0], normal: [0.0, 0.0,-1.0] },
-//                Vertex { position: [ s,  s, z], color: [1.0, 0.0, 1.0], normal: [0.0, 0.0,-1.0] },
-//                Vertex { position: [-s, -s, z], color: [1.0, 0.0, 1.0], normal: [0.0, 0.0,-1.0] },
-//                Vertex { position: [ s,  s, z], color: [1.0, 0.0, 1.0], normal: [0.0, 0.0,-1.0] },
-//                Vertex { position: [ s, -s, z], color: [1.0, 0.0, 1.0], normal: [0.0, 0.0,-1.0] },
-//            ].iter().cloned()
-            ).expect("Failed to create VBO for `Object`")
+            let staging_buffer = CpuAccessibleBuffer::from_iter(queue.device().clone(),
+                                           BufferUsage::transfer_source(),
+                                           vertices.iter().cloned())
+                .expect("Failed to create VBO for `Object`");
+
+            let (buff, future) = ImmutableBuffer::from_buffer(
+                staging_buffer, BufferUsage::vertex_buffer(), queue.clone()).unwrap();
+            future.then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+            buff
         };
 
 

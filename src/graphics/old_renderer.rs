@@ -3,18 +3,11 @@ use std::sync::Arc;
 use cgmath::{Matrix4, vec3};
 use cgmath::SquareMatrix;
 use cgmath::Vector3;
-use vulkano::command_buffer::AutoCommandBufferBuilder;
-use vulkano::command_buffer::CommandBuffer;
+use vulkano::command_buffer::{ AutoCommandBufferBuilder, CommandBuffer };
 use vulkano::device::Queue;
 use vulkano::format::Format;
-use vulkano::framebuffer::Framebuffer;
-use vulkano::framebuffer::FramebufferAbstract;
-use vulkano::framebuffer::RenderPassAbstract;
-use vulkano::framebuffer::Subpass;
-use vulkano::image::{AttachmentImage, ImageInner};
-use vulkano::image::ImageAccess;
-use vulkano::image::ImageUsage;
-use vulkano::image::ImageViewAccess;
+use vulkano::framebuffer::{ Framebuffer, FramebufferAbstract, RenderPassAbstract, Subpass };
+use vulkano::image::{ AttachmentImage, ImageInner, ImageAccess, ImageUsage, ImageViewAccess };
 use vulkano::sync::GpuFuture;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -25,6 +18,8 @@ use vulkano::buffer::{
     CpuAccessibleBuffer,
     DeviceLocalBuffer
 };
+
+use crate::graphics::object::*;
 
 pub enum RendererState<'f> {
     Drawing(RenderExecutor<'f>),
@@ -74,7 +69,6 @@ impl <'f> ShadowExecutor<'f> {
     }
 }
 
-pub trait RendererDrawable { fn render(executor: &mut RenderExecutor); }
 
 /// Provide multipass rendering
 pub struct Renderer {
@@ -207,6 +201,10 @@ impl Renderer {
 
             light_pass,
         }
+    }
+
+    pub fn new_mesh_data(&mut self) {
+
     }
 
     #[inline]
@@ -375,7 +373,7 @@ mod lighting_pass {
     use vulkano::buffer::{CpuAccessibleBuffer, BufferUsage};
     use vulkano::pipeline::{ GraphicsPipelineAbstract, GraphicsPipeline };
     use vulkano::pipeline::blend::{AttachmentBlend, BlendOp, BlendFactor};
-    use crate::graphics::renderer::RenderExecutor;
+    use crate::graphics::old_renderer::RenderExecutor;
     use vulkano::pipeline::viewport::Viewport;
     use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
     use vulkano::sampler::{Sampler, MipmapMode, SamplerAddressMode, Filter};
