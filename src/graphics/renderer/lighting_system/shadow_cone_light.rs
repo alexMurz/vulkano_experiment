@@ -49,8 +49,11 @@ layout(input_attachment_index = 2, set = 0, binding = 2) uniform subpassInput u_
 layout(location = 0) out vec4 s_color;
 
 layout(set = 1, binding = 0) uniform sampler2D u_shadow;
+//layout(set = 1, binding = 1) uniform sampler u_sampler;
+
 layout(set = 1, binding = 1) uniform LightData {
     mat4 shadow_biased;
+    vec3 light_pos;
     float light_pow;
 } lightData;
 
@@ -99,7 +102,7 @@ void main() {
     vec3 col = subpassLoad(u_diffuse).rgb;
 
 // Do simple point light lighting sence shadow map will clamp not needed lighting
-    vec3 light_pos = vec3(5.0, -7.0, 5.0);
+    vec3 light_pos = lightData.light_pos; // vec3(5.0, -7.0, 5.0);
     float light_pow = lightData.light_pow;
 
     vec3 L = normalize(light_pos - world.xyz);
@@ -172,6 +175,7 @@ impl ShadedConeLight {
                 .unwrap()) as Arc<dyn GraphicsPipelineAbstract + Send + Sync>
         };
 
+
         let sampler = Sampler::new(queue.device().clone(),
             Filter::Linear, Filter::Linear, MipmapMode::Linear,
             SamplerAddressMode::ClampToEdge,
@@ -183,7 +187,8 @@ impl ShadedConeLight {
         let light_data_buffer = CpuAccessibleBuffer::from_data(queue.device().clone(), BufferUsage::uniform_buffer(),
             fs::ty::LightData {
                 shadow_biased: Matrix4::identity().into(),
-                light_pow: 10.0.into(),
+                light_pow: 20.0.into(),
+                light_pos: [5.0, -7.0, 5.0].into()
             }
         ).unwrap();
 
@@ -227,17 +232,30 @@ impl ShadedConeLight {
         let source = source_ref.borrow();
 
         // Write matrix data to buffer
-        {
-            let mut writer = self.light_data_buffer.write().unwrap();
-            writer.shadow_biased = (SHADOW_BIAS * source.view_projection).into();
-        }
+
+        let light_data_buffer = CpuAccessibleBuffer::from_data(
+            self.queue.device().clone(), BufferUsage::uniform_buffer(),
+            fs::ty::LightData {
+                shadow_biased: (SHADOW_BIAS * source.view_projection).into(),
+                light_pow: 20.0.into(),
+                light_pos: source.light_pos.into()
+            }
+        ).unwrap();
+
+//        {
+//            let mut writer = self.light_data_buffer.write().unwrap();
+//            writer.shadow_biased = (SHADOW_BIAS * source.view_projection).into();
+//            writer.light_pos = source.light_pos.into();
+//        }
 
         // Create desc set TODO: Make source be owner of set
         let light_data_set = Arc::new(
             PersistentDescriptorSet::start(self.pipeline.clone(), 1)
-            .add_sampled_image(source.image.clone(), self.sampler.clone()).unwrap()
-            .add_buffer(self.light_data_buffer.clone()).unwrap()
-            .build().unwrap()
+//                .add_image(source.image.clone()).unwrap()
+//                .add_sampler(self.sampler.clone()).unwrap()
+                .add_sampled_image(source.image.clone(), self.sampler.clone()).unwrap()
+                .add_buffer(light_data_buffer.clone()).unwrap()
+                .build().unwrap()
         );
 
         let attachment_set = self.attachment_set.as_ref().unwrap().clone();

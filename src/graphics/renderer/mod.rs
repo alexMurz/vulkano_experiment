@@ -104,15 +104,26 @@ impl Renderer {
         ).unwrap();
 
         let mut shadow_mapping = ShadowMapping::new(queue.clone());
-        let mut shadow_source = shadow_mapping.new_source([2048, 2048]);
-        // Edit shadow source
-        {
-            shadow_source.borrow_mut().view_projection = {
+        for i in 0..1000 {
+            let x = (i as f32 / 1000.0 * 3.1415 * 2.0).sin() * 5.0;
+            let y = (i as f32 / 1000.0 * 3.1415 * 2.0).cos() * 5.0;
+            let mut ss = shadow_mapping.new_source([8, 8]);
+            ss.borrow_mut().light_pos = [x, -5.0, y];
+            ss.borrow_mut().view_projection = {
                 cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 20.0)
-                    * Matrix4::look_at(Point3::new(5.0,-7.0, 5.0), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
+                    * Matrix4::look_at(Point3::new(x,-5.0, y), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
+
             };
         }
-
+//        let mut shadow_source1 = shadow_mapping.new_source([1024, 1024]);
+//        // Edit shadow source
+//        {
+//            shadow_source1.borrow_mut().light_pos = [3.0, -7.0, 5.0];
+//            shadow_source1.borrow_mut().view_projection = {
+//                cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 20.0)
+//                    * Matrix4::look_at(Point3::new(3.0,-7.0, 5.0), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
+//            };
+//        }
         let geom_pass = GeometryPass::new(
             queue.clone(),
             Subpass::from(render_pass.clone(), 0).unwrap()

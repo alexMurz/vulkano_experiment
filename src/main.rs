@@ -124,7 +124,7 @@ pub fn start() {
         Swapchain::new(device.clone(), surface.clone(),
                        image_count, format, dimensions, 1,
                        usage, &main_queue, SurfaceTransform::Identity,
-                       alpha, PresentMode::Immediate,
+                       alpha, PresentMode::Fifo,
                        true, None).unwrap()
     };
 

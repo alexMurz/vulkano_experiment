@@ -1,7 +1,7 @@
 
 use std::sync::Arc;
 use vulkano::device::{Queue, DeviceOwned};
-use vulkano::framebuffer::{Subpass, RenderPassAbstract, FramebufferBuilder, Framebuffer, FramebufferAbstract};
+use vulkano::framebuffer::{Subpass, RenderPassAbstract, FramebufferBuilder, Framebuffer, FramebufferAbstract, AttachmentDescription};
 use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
 use vulkano::buffer::{BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer, DeviceLocalBuffer};
 use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess, ScreenVertex};
@@ -16,6 +16,7 @@ use vulkano::format::{Format, FormatDesc};
 use crate::graphics::renderer::lighting_system::shadow_cone_light::ShadedConeLight;
 use vulkano::pipeline::viewport::Viewport;
 use std::cell::RefCell;
+use vulkano::sampler::Sampler;
 
 
 mod depth_vs {
@@ -48,9 +49,11 @@ void main() {}"
 
 /// Holds reference to matrix and output image attachment
 /// Output doesn't change unless resolution changes
+/// TODO: Make better structure
 pub struct ShadowSource {
     pub active: bool, // if active, will be updated
     pub view_projection: Matrix4<f32>,
+    pub light_pos: [f32; 3],
     pub image: Arc<AttachmentImage>
 }
 
@@ -125,8 +128,8 @@ impl ShadowMapping {
     }
 
     pub fn new_source(&mut self, resolution: [u32; 2]) -> Arc<RefCell<ShadowSource>> {
-        let img = AttachmentImage::with_usage(
-            self.queue.device().clone(), resolution, Format::D16Unorm,
+        let img = AttachmentImage::multisampled_with_usage(
+            self.queue.device().clone(), resolution, 1, Format::D16Unorm,
             ImageUsage {
                 sampled: true,
                 depth_stencil_attachment: true,
@@ -136,6 +139,7 @@ impl ShadowMapping {
         let source = Arc::new(RefCell::new(ShadowSource {
             active: true,
             view_projection: Matrix4::identity(),
+            light_pos: [0.0, 0.0, 0.0],
             image: img
         }));
         self.sources.push(source.clone());
