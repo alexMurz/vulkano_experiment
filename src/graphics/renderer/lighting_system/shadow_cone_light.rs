@@ -4,7 +4,7 @@ use vulkano::device::Queue;
 use vulkano::framebuffer::{Subpass, RenderPassAbstract};
 use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
 use vulkano::buffer::{BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer};
-use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess};
+use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess, ScreenVertex};
 use vulkano::sync::GpuFuture;
 use vulkano::pipeline::blend::{AttachmentBlend, BlendOp, BlendFactor};
 use vulkano::descriptor::DescriptorSet;
@@ -13,9 +13,12 @@ use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState};
 use vulkano::image::{AttachmentImage, ImageAccess, ImageViewAccess};
 use vulkano::sampler::{Sampler, Filter, MipmapMode, SamplerAddressMode, BorderColor};
+use crate::graphics::renderer::shadow_mapping::ShadowSource;
+use std::cell::RefCell;
 
 // Use given geometry and other stuff to render it all into final image
-// Apply light sources in additive manner
+// Apply cone light source and its shadow in additive manner
+// Same rules for all kinds of lighting
 
 mod vs {
     vulkano_shaders::shader! {
@@ -23,12 +26,12 @@ mod vs {
         src: "\
 #version 450
 
-layout(location = 0) in vec3 position;
+layout(location = 0) in vec2 position;
 layout(location = 0) out vec2 v_screen_coords;
 
 void main() {
-    v_screen_coords = position.xy;
-    gl_Position = vec4(position.xy, 0.0, 1.0);
+    v_screen_coords = position;
+    gl_Position = vec4(position, 0.0, 1.0);
 }"
     }
 }
@@ -45,13 +48,16 @@ layout(input_attachment_index = 2, set = 0, binding = 2) uniform subpassInput u_
 
 layout(location = 0) out vec4 s_color;
 
-layout(set = 0, binding = 3) uniform sampler2D u_shadow;
+layout(set = 1, binding = 0) uniform sampler2D u_shadow;
+layout(set = 1, binding = 1) uniform LightData {
+    mat4 shadow_biased;
+    float light_pow;
+} lightData;
 
 layout(location = 0) in vec2 v_screen_coords;
 
 layout(push_constant) uniform PushData {
     mat4 to_world;
-    mat4 shadow_biased;
 } push;
 
 
@@ -63,15 +69,21 @@ vec2 poissonDisk[4] = vec2[](
 );
 float spread = 700.0;
 
-// #define SHADOW_POISSON
+//#define SHADOW_POISSON
 float sampleShadow(vec4 shadow_coord, float bias) {
+    shadow_coord.xy /= shadow_coord.w;
+// Sence its a cone, clamp circle on `uvs`
+    vec2 shadow_space_uv = shadow_coord.xy * 2 - vec2(1.0, 1.0);
+    if (length(shadow_space_uv) >= 1.0) return 0.0;
+// Only shadow_coord.xy was devided by w, use w to divide z with bias attached
+// To account for perspective projection, use shadow_coord
     float shade = 1.0;
 #ifdef SHADOW_POISSON
     for (int i=0;i<4;i++){
-        if (texture(u_shadow, shadow_coord.xy + poissonDisk[i]/spread).r < shadow_coord.z - bias) shade -= 0.2;
+        if (texture(u_shadow, shadow_coord.xy + poissonDisk[i]/spread).r < (shadow_coord.z - bias) / shadow_coord.w) shade -= 0.2;
     }
 #else
-    if (texture(u_shadow, shadow_coord.xy).r < shadow_coord.z - bias) shade = 0.0;
+    if (texture(u_shadow, shadow_coord.xy).r < (shadow_coord.z - bias) / shadow_coord.w) shade = 0.0;
 #endif
     return shade;
 }
@@ -83,54 +95,61 @@ void main() {
     vec4 world = push.to_world * vec4(v_screen_coords, depth, 1.0);
     world /= world.w;
     vec2 uv = v_screen_coords.xy * vec2(0.5, 0.5) + vec2(0.5, 0.5);
-    vec3 normal = normalize(subpassLoad(u_normal).xyz);
+    vec3 normal = normalize(-subpassLoad(u_normal).xyz);
     vec3 col = subpassLoad(u_diffuse).rgb;
 
-    vec3 light_pos = vec3(0.0, -3.0, 0.0);
+// Do simple point light lighting sence shadow map will clamp not needed lighting
+    vec3 light_pos = vec3(5.0, -7.0, 5.0);
+    float light_pow = lightData.light_pow;
+
     vec3 L = normalize(light_pos - world.xyz);
     float cosTheta = dot(L, normal);
 
-    float light_percent = max(abs(cosTheta), 0.0);
-    float light_distance = length(L) / 20.0;
-    light_percent *= 1.0 / exp(light_distance);
+    float light_distance = length(light_pos - world.xyz);
+    float light_percent = max(cosTheta * sqrt(1.0 - light_distance/light_pow), 0.0);
 
-    vec4 shadow_coord = push.shadow_biased * world;
-    shadow_coord /= shadow_coord.w;
-    float shade = sampleShadow(shadow_coord, 0.05*tan(acos(-cosTheta)));
+    float shade = sampleShadow(lightData.shadow_biased * world, 0.05*tan(acos(cosTheta)));
 
     s_color = vec4(col * shade * light_percent, 1.0);
 }"
     }
 }
 
+const SHADOW_BIAS: Matrix4<f32> = Matrix4::new(
+    0.5, 0.0, 0.0, 0.0,
+    0.0, 0.5, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0,
+    0.5, 0.5, 0.0, 1.0,
+);
 
-pub struct Shadeless {
+pub struct ShadedConeLight {
     queue: Arc<Queue>,
     // No lighting or shadows, only material color
-    shadeless_pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
+    pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
     // Desc set with attachments
     attachment_set: Option<Arc<dyn DescriptorSet + Send + Sync>>,
 
     // Sampler
     sampler: Arc<Sampler>,
-    shadow_image: Arc<dyn ImageViewAccess + Send + Sync>,
+
+    light_data_buffer: Arc<CpuAccessibleBuffer<fs::ty::LightData>>,
 
     // Push constants
     pub to_world: Matrix4<f32>,
-    pub shadow_biased: Matrix4<f32>,
 }
-impl Shadeless {
-    pub fn new<R>(queue: Arc<Queue>, shadow_image: Arc<dyn ImageViewAccess + Send + Sync>, subpass: Subpass<R>) -> Self
+impl ShadedConeLight {
+    pub fn new<R>(queue: Arc<Queue>,
+                  subpass: Subpass<R>) -> Self
         where R: RenderPassAbstract + Send + Sync + 'static
     {
-        let shadeless_pipeline = {
+        let pipeline = {
             let vs = vs::Shader::load(queue.device().clone())
                 .expect("failed to create shader module");
             let fs = fs::Shader::load(queue.device().clone())
                 .expect("failed to create shader module");
 
             Arc::new(GraphicsPipeline::start()
-                .vertex_input_single_buffer::<Vertex3D>()
+                .vertex_input_single_buffer::<ScreenVertex>()
                 .vertex_shader(vs.main_entry_point(), ())
                 .triangle_strip()
                 .viewports_dynamic_scissors_irrelevant(1)
@@ -155,21 +174,28 @@ impl Shadeless {
 
         let sampler = Sampler::new(queue.device().clone(),
             Filter::Linear, Filter::Linear, MipmapMode::Linear,
-            SamplerAddressMode::ClampToBorder(BorderColor::FloatOpaqueWhite),
-            SamplerAddressMode::ClampToBorder(BorderColor::FloatOpaqueWhite),
-            SamplerAddressMode::ClampToBorder(BorderColor::FloatOpaqueWhite),
+            SamplerAddressMode::ClampToEdge,
+            SamplerAddressMode::ClampToEdge,
+            SamplerAddressMode::ClampToEdge,
             0.0, 1.0, 0.0, 0.0,
+        ).unwrap();
+
+        let light_data_buffer = CpuAccessibleBuffer::from_data(queue.device().clone(), BufferUsage::uniform_buffer(),
+            fs::ty::LightData {
+                shadow_biased: Matrix4::identity().into(),
+                light_pow: 10.0.into(),
+            }
         ).unwrap();
 
         Self {
             queue,
-            shadeless_pipeline,
+            pipeline,
             attachment_set: None,
 
             sampler,
-            shadow_image,
+            light_data_buffer,
+
             to_world: Matrix4::identity(),
-            shadow_biased: Matrix4::identity(),
         }
     }
 
@@ -180,33 +206,50 @@ impl Shadeless {
     )
     {
         self.attachment_set = Some(Arc::new(
-            PersistentDescriptorSet::start(self.shadeless_pipeline.clone(), 0)
+            PersistentDescriptorSet::start(self.pipeline.clone(), 0)
                 .add_image(diffuse_buffer).unwrap()
                 .add_image(normal_buffer).unwrap()
                 .add_image(depth_buffer).unwrap()
-                .add_sampled_image(self.shadow_image.clone(), self.sampler.clone()).unwrap()
                 .build().unwrap()
         ));
     }
 
 
-    pub fn render<'f>(&mut self, vbo: Arc<dyn BufferAccess + Send + Sync>, dyn_state: &DynamicState) -> AutoCommandBuffer
+    pub fn render<'f>(&mut self,
+                      source_ref: Arc<RefCell<ShadowSource>>,
+                      vbo: Arc<dyn BufferAccess + Send + Sync>,
+                      dyn_state: &DynamicState) -> AutoCommandBuffer
     {
         if self.attachment_set.is_none() {
             panic!("Attachments not specified, use set_attachments");
         }
+
+        let source = source_ref.borrow();
+
+        // Write matrix data to buffer
+        {
+            let mut writer = self.light_data_buffer.write().unwrap();
+            writer.shadow_biased = (SHADOW_BIAS * source.view_projection).into();
+        }
+
+        // Create desc set TODO: Make source be owner of set
+        let light_data_set = Arc::new(
+            PersistentDescriptorSet::start(self.pipeline.clone(), 1)
+            .add_sampled_image(source.image.clone(), self.sampler.clone()).unwrap()
+            .add_buffer(self.light_data_buffer.clone()).unwrap()
+            .build().unwrap()
+        );
 
         let attachment_set = self.attachment_set.as_ref().unwrap().clone();
 
         let mut cbb = AutoCommandBufferBuilder::secondary_graphics(
             self.queue.device().clone(),
             self.queue.family(),
-            self.shadeless_pipeline.clone().subpass()
+            self.pipeline.clone().subpass()
         ).unwrap()
-            .draw(self.shadeless_pipeline.clone(), dyn_state, vec![vbo.clone()],
-                  (attachment_set), (fs::ty::PushData {
+            .draw(self.pipeline.clone(), dyn_state, vec![vbo.clone()],
+                  (attachment_set, light_data_set), (fs::ty::PushData {
                     to_world: self.to_world.into(),
-                    shadow_biased: self.shadow_biased.into()
                 })
             ).unwrap();
 

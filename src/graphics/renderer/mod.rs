@@ -11,12 +11,14 @@ use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState, CommandBuf
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::buffer::{BufferUsage, ImmutableBuffer};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-use crate::graphics::renderer::lighting_system::LightingPass;
-use crate::graphics::renderer::shadow_mapping::ShadowMapping;
 
 mod geometry_pass;
 mod lighting_system;
 mod shadow_mapping;
+
+use lighting_system::LightingPass;
+use shadow_mapping::ShadowMapping;
+use crate::graphics::light::LightSystem;
 
 pub struct Renderer {
     // Basics
@@ -31,6 +33,9 @@ pub struct Renderer {
 
     // Shadow Mapper
     shadow_mapping: ShadowMapping,
+
+    // Holder of lights
+//    light_system: LightSystem
 
     // Passes
     geom_pass: GeometryPass,
@@ -100,12 +105,13 @@ impl Renderer {
 
         let mut shadow_mapping = ShadowMapping::new(queue.clone());
         let mut shadow_source = shadow_mapping.new_source([2048, 2048]);
-        shadow_source.borrow_mut().view_projection = {
-//                self.geom_pass.view_projection
-            cgmath::perspective(cgmath::Deg(90.0), 1.0, 0.1, 10.0)
-//                cgmath::ortho(-5.0, 5.0, -5.0, 5.0, -10.0, 10.0)
-                * Matrix4::look_at(Point3::new(1.0,-3.0, 1.0), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
-        };
+        // Edit shadow source
+        {
+            shadow_source.borrow_mut().view_projection = {
+                cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 20.0)
+                    * Matrix4::look_at(Point3::new(5.0,-7.0, 5.0), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
+            };
+        }
 
         let geom_pass = GeometryPass::new(
             queue.clone(),
@@ -113,17 +119,8 @@ impl Renderer {
         );
         let mut lighting_pass = LightingPass::new(
             queue.clone(),
-            shadow_source.borrow().image.clone(),
             Subpass::from(render_pass.clone(), 1).unwrap()
         );
-        lighting_pass.shadeless.shadow_biased = {
-            Matrix4::new(
-                0.5, 0.0, 0.0, 0.0,
-                0.0, 0.5, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                0.5, 0.5, 0.0, 1.0
-            ) * shadow_source.borrow().view_projection
-        };
 
         Self {
             queue,
@@ -235,8 +232,15 @@ impl Renderer {
 
         // Do Finalization
         cbb = unsafe {
-            cbb.next_subpass(true).unwrap()
-                .execute_commands(self.lighting_pass.render(&self.dyn_state)).unwrap()
+            cbb = cbb.next_subpass(true).unwrap();
+            // Render for all shadow sources
+            // TODO Change to light sources and make light sources hold shadow data
+            for l in self.shadow_mapping.get_sources().iter() {
+                if let Some(cb) = self.lighting_pass.render_source(&self.dyn_state, l.clone()) {
+                    cbb = cbb.execute_commands(cb).unwrap();
+                }
+            }
+            cbb
         };
 
         let cb = cbb.end_render_pass().unwrap().build().unwrap();

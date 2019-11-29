@@ -13,7 +13,7 @@ use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState};
 use vulkano::image::{ImageAccess, AttachmentImage, ImageUsage, StorageImage, Dimensions, ImageViewAccess};
 use vulkano::format::{Format, FormatDesc};
-use crate::graphics::renderer::lighting_system::shadeless::Shadeless;
+use crate::graphics::renderer::lighting_system::shadow_cone_light::ShadedConeLight;
 use vulkano::pipeline::viewport::Viewport;
 use std::cell::RefCell;
 
@@ -31,7 +31,8 @@ layout(push_constant) uniform PushData {
 } push;
 
 void main() {
-    gl_Position = push.mvp * vec4(position, 1.0);
+    vec4 pos = push.mvp * vec4(position, 1.0);
+    gl_Position = pos;
 }"
     }
 }
@@ -43,14 +44,6 @@ mod depth_fs {
 void main() {}"
     }
 }
-
-
-const BIAS_MATRIX: Matrix4<f32> = Matrix4::new(
-    0.5, 0.0, 0.0, 0.0,
-    0.0, 0.5, 0.0, 0.0,
-    0.0, 0.0, 1.0, 0.0,
-    0.5, 0.5, 0.0, 1.0
-);
 
 
 /// Holds reference to matrix and output image attachment
@@ -125,6 +118,10 @@ impl ShadowMapping {
             dyn_state: DynamicState::none(),
             sources: Vec::new()
         }
+    }
+
+    pub fn get_sources(&self) -> &Vec<Arc<RefCell<ShadowSource>>> {
+        self.sources.as_ref()
     }
 
     pub fn new_source(&mut self, resolution: [u32; 2]) -> Arc<RefCell<ShadowSource>> {

@@ -110,6 +110,7 @@ impl GeometryPass {
                 .viewports_dynamic_scissors_irrelevant(1)
                 .fragment_shader(fs.main_entry_point(), ())
                 .depth_stencil_simple_depth()
+                .cull_mode_back()
 //                .blend_collective(AttachmentBlend {
 //                    enabled: true,
 //                    color_op: BlendOp::Add,

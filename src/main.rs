@@ -22,7 +22,7 @@ use vulkano_win::VkSurfaceBuild;
 
 use winit::{Window, ElementState, VirtualKeyCode};
 
-use cgmath::{Matrix3, Matrix4, Point3, Vector3, Rad, SquareMatrix};
+use cgmath::{Matrix3, Matrix4, Point3, Vector3, Rad, SquareMatrix, vec3};
 
 use std::iter;
 use std::sync::Arc;
@@ -44,22 +44,21 @@ mod loader;
 
 fn main() {
     start();
-//    test_blend();
+//    test_matrix();
 }
 
-fn test_blend() {
-    let blend = Blend::from_path("src/data/test.blend");
-    loader::blender::load_model_faces(&blend, "myCubeMesh", |face| {
-        println!("Face");
-        println!(" -- {:?}", face);
-    });
-//    for obj in blend.get_by_code(*b"OB") {
-//        if obj.is_valid("data") && obj.get("data").code() == *b"ME\0\0" {
-//            let name = &obj.get("id").get_string("name")[2..];
-//            let loc = obj.get_f32_vec("loc");
-//            println!("\"{}\" at {:?}, {:?}", name, loc,  obj.get("data").code());
-//        }
-//    }
+fn test_matrix() {
+    let pos = [7.0f32, 4.0, 0.0];
+    let rot = [45.0f32, 0.0, 0.0];
+
+    let mat = cgmath::perspective(cgmath::Deg(90.0), 1.0, 1.0, 10.0)
+        * Matrix4::from_angle_x(cgmath::Deg(rot[0]))
+        * Matrix4::from_angle_y(cgmath::Deg(rot[1]))
+        * Matrix4::from_angle_z(cgmath::Deg(rot[2]))
+        * Matrix4::from_translation(vec3(pos[0], pos[1], pos[2])
+    );
+
+    println!("Matrix: {:?}", mat);
 }
 
 pub fn start() {
@@ -81,7 +80,10 @@ pub fn start() {
     let surface = {
         let mut wb = winit::WindowBuilder::new()
             .with_title("Title")
-            .with_dimensions((800.0, 600.0).into());
+            .with_dimensions((800.0, 600.0).into())
+            .with_min_dimensions((640.0, 480.0).into())
+            .with_max_dimensions((1920.0, 1080.0).into())
+            .with_resizable(true);
         wb.build_vk_surface(&event_loop, instance.clone()).unwrap()
     };
     let window = surface.window();
@@ -101,13 +103,16 @@ pub fn start() {
     let device_ext = DeviceExtensions { khr_swapchain: true, .. DeviceExtensions::none() };
 
     let (device, mut queues) = Device::new(
-        physical, physical.supported_features(), &device_ext, [(queue_family, 0.5)].iter().cloned()
+        physical, physical.supported_features(), &device_ext,
+        [(queue_family, 0.5)].iter().cloned()
     ).unwrap();
 
     let main_queue = queues.next().unwrap();
 
     let (mut swapchain, mut images) = {
         let caps = surface.capabilities(physical).unwrap();
+        println!("Device Caps: {:?}", caps);
+
         let usage = caps.supported_usage_flags;
         let format = caps.supported_formats[0].0;
         let alpha = caps.supported_composite_alpha.iter().next().unwrap();
@@ -116,8 +121,11 @@ pub fn start() {
 
         let image_count = caps.min_image_count;
 
-        Swapchain::new(device.clone(), surface.clone(), image_count, format, dimensions, 1,
-                       usage, &main_queue, SurfaceTransform::Identity, alpha, PresentMode::Fifo, true, None).unwrap()
+        Swapchain::new(device.clone(), surface.clone(),
+                       image_count, format, dimensions, 1,
+                       usage, &main_queue, SurfaceTransform::Identity,
+                       alpha, PresentMode::Immediate,
+                       true, None).unwrap()
     };
 
 //    let mut renderer = renderer::Renderer::new(main_queue.clone(), &mut queues, swapchain.format());
@@ -128,6 +136,7 @@ pub fn start() {
         let projection = cgmath::perspective(cgmath::Deg(60.0), 1.0, 0.01, 100.0);
         Camera::new(projection)
     };
+
     let (mut floor_object, mut test_object) = {
         use graphics::object::{ MeshData, Vertex3D, ObjectInstance };
 
@@ -140,15 +149,6 @@ pub fn start() {
             Vertex3D::from_position(-floor_size, 0.0, floor_size).flat_shading(true),
             Vertex3D::from_position( floor_size, 0.0, floor_size).flat_shading(true),
             Vertex3D::from_position( floor_size, 0.0,-floor_size).flat_shading(true),
-
-            //
-//            Vertex3D::from_position(-floor_size, 0.0,-floor_size).flat_shading(true),
-//            Vertex3D::from_position( floor_size, 0.0,-floor_size).flat_shading(true),
-//            Vertex3D::from_position(-floor_size, 0.0, floor_size).flat_shading(true),
-//
-//            Vertex3D::from_position(-floor_size, 0.0, floor_size).flat_shading(true),
-//            Vertex3D::from_position( floor_size, 0.0,-floor_size).flat_shading(true),
-//            Vertex3D::from_position( floor_size, 0.0, floor_size).flat_shading(true),
         ]);
 
         let mut vertices = Vec::new();
@@ -206,6 +206,8 @@ pub fn start() {
         prev_time = time;
         let delta = (delta_ns as f64 / 1e9f64) as f32;
 
+        println!("FPS: {}", 1.0 / delta);
+
         /* Update */{
             t += delta;
             test_object.set_pos(t.sin(), 0.0, 0.0);
@@ -254,18 +256,6 @@ pub fn start() {
             Err(err) => panic!("{:?}", err)
         };
 
-//        let future = renderer.render(
-//            prev_sync.join(acquire_future),
-//            images[image_num].clone(),
-//            |state| {
-//                match state {
-//                    RendererState::Drawing(mut executor) => scene.render(&mut executor),
-//                    RendererState::Shadow(mut executor) => scene.render_shadows(&mut executor),
-//                    _ => ()
-//                };
-//            },
-//        );
-
         renderer.set_view_projection(camera.get_view_projection());
         let future = renderer.render(
             prev_sync.join(acquire_future),
@@ -312,7 +302,9 @@ pub fn start() {
                                 _ => ()
                             }
                         }
-                        winit::WindowEvent::CloseRequested => running = false,
+                        winit::WindowEvent::CloseRequested => {
+                            running = false;
+                        },
                         winit::WindowEvent::Resized(size) => {
                             let aspect = size.width as f32 / size.height as f32;
                             let projection = cgmath::perspective(cgmath::Deg(60.0), aspect, 0.01, 50.0);

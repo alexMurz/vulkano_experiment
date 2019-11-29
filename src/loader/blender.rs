@@ -2,6 +2,7 @@
 extern crate blend;
 
 use crate::loader::Face;
+use cgmath::{vec3, Vector3, InnerSpace};
 
 pub fn load_model_faces<M>(blend: &blend::Blend, model_name: &str, mut face_map: M)
     where M: FnMut(Face)
@@ -68,6 +69,35 @@ pub fn load_model_faces<M>(blend: &blend::Blend, model_name: &str, mut face_map:
 
                 index_count += 1;
             }
+
+
+            let face_normal = {
+                // Points
+                let a = vec3(vert_buff[0][0], vert_buff[0][1], vert_buff[0][2]);
+                let b = vec3(vert_buff[1][0], vert_buff[1][1], vert_buff[1][2]);
+                let c = vec3(vert_buff[2][0], vert_buff[2][1], vert_buff[2][2]);
+                // Find face normal
+                Vector3::normalize(Vector3::cross(b - a, c - a))
+            };
+
+            // Avg of vertex normals
+            let avg_normal = {
+                let a = vec3(norm_buff[0][0], norm_buff[0][1], norm_buff[0][2]);
+                let b = vec3(norm_buff[1][0], norm_buff[1][1], norm_buff[1][2]);
+                let c = vec3(norm_buff[2][0], norm_buff[2][1], norm_buff[2][2]);
+                (a + b + c) / 3.0
+            };
+
+            // TODO: Spin vertices in right order
+            // Reorder if required
+//            if Vector3::dot(face_normal, avg_normal) < 0.0 {
+//                vert_buff.swap(1, 2);
+//                norm_buff.swap(1, 2);
+//                uv_buff.swap(1, 2);
+//            }
+            vert_buff.swap(1, 2);
+            norm_buff.swap(1, 2);
+            uv_buff.swap(1, 2);
 
             face_map(Face {
                 vert_count: 3,
