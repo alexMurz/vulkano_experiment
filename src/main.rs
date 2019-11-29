@@ -131,21 +131,39 @@ pub fn start() {
     let (mut floor_object, mut test_object) = {
         use graphics::object::{ MeshData, Vertex3D, ObjectInstance };
 
-        let floor_size = 5.0;
+        let floor_size = 15.0;
         let floor_mesh = renderer.generate_mesh_from_data(vec![
-            Vertex3D::from_position(-floor_size, 0.0, -floor_size),
-            Vertex3D::from_position(-floor_size, 0.0,  floor_size),
-            Vertex3D::from_position( floor_size, 0.0, -floor_size),
+            Vertex3D::from_position(-floor_size, 0.0,-floor_size).flat_shading(true),
+            Vertex3D::from_position(-floor_size, 0.0, floor_size).flat_shading(true),
+            Vertex3D::from_position( floor_size, 0.0,-floor_size).flat_shading(true),
 
-            Vertex3D::from_position( floor_size, 0.0, -floor_size),
-            Vertex3D::from_position(-floor_size, 0.0,  floor_size),
-            Vertex3D::from_position( floor_size, 0.0,  floor_size),
+            Vertex3D::from_position(-floor_size, 0.0, floor_size).flat_shading(true),
+            Vertex3D::from_position( floor_size, 0.0, floor_size).flat_shading(true),
+            Vertex3D::from_position( floor_size, 0.0,-floor_size).flat_shading(true),
+
+            //
+//            Vertex3D::from_position(-floor_size, 0.0,-floor_size).flat_shading(true),
+//            Vertex3D::from_position( floor_size, 0.0,-floor_size).flat_shading(true),
+//            Vertex3D::from_position(-floor_size, 0.0, floor_size).flat_shading(true),
+//
+//            Vertex3D::from_position(-floor_size, 0.0, floor_size).flat_shading(true),
+//            Vertex3D::from_position( floor_size, 0.0,-floor_size).flat_shading(true),
+//            Vertex3D::from_position( floor_size, 0.0, floor_size).flat_shading(true),
         ]);
-        let obj_mesh = renderer.generate_mesh_from_data(vec![
-            Vertex3D::from_position(-0.5, -0.5, 0.0),
-            Vertex3D::from_position(-0.5,  0.5, 0.0).color(0.0, 1.0, 0.0, 1.0),
-            Vertex3D::from_position( 0.5, -0.5, 0.0),
-        ]);
+
+        let mut vertices = Vec::new();
+        let blend = blend::Blend::from_path("src/data/test.blend");
+        loader::blender::load_model_faces(&blend, "Cube", |face| {
+            for i in 0..face.vert_count {
+                vertices.push(
+                    Vertex3D::from_position(face.vert[i][0], face.vert[i][1], face.vert[i][2])
+                        .normal(face.norm[i][0], face.norm[i][1], face.norm[i][2])
+                        .uv(face.uv[i][0], face.uv[i][1])
+                        .flat_shading(true)
+                );
+            }
+        });
+        let obj_mesh = renderer.generate_mesh_from_data(vertices);
         (
             ObjectInstance {
                 mesh_data: Arc::new(floor_mesh),

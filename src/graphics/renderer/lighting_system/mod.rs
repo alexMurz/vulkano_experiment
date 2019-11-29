@@ -11,7 +11,7 @@ use vulkano::descriptor::DescriptorSet;
 use cgmath::{ Matrix4, SquareMatrix };
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState};
-use vulkano::image::AttachmentImage;
+use vulkano::image::{AttachmentImage, ImageAccess, ImageViewAccess};
 use crate::graphics::renderer::lighting_system::shadeless::Shadeless;
 
 
@@ -25,10 +25,12 @@ pub struct LightingPass {
     vbo: Arc<dyn BufferAccess + Send + Sync>,
 
     // Only use is then debugging
-    shadeless: Shadeless,
+    pub shadeless: Shadeless,
+
+    view_projection: Matrix4<f32>,
 }
 impl LightingPass {
-    pub fn new<R>(queue: Arc<Queue>, subpass: Subpass<R>) -> Self
+    pub fn new<R>(queue: Arc<Queue>, shadow_image: Arc<dyn ImageViewAccess + Send + Sync>, subpass: Subpass<R>) -> Self
         where R: RenderPassAbstract + Send + Sync + Clone + 'static
     {
 
@@ -43,15 +45,21 @@ impl LightingPass {
             a
         };
 
-        let shadeless_pass = shadeless::Shadeless::new(queue.clone(), Subpass::clone(&subpass));
+        let shadeless_pass = shadeless::Shadeless::new(queue.clone(), shadow_image, Subpass::clone(&subpass));
 
         Self {
             vbo,
-            shadeless: shadeless_pass
+            shadeless: shadeless_pass,
+            view_projection: Matrix4::identity(),
         }
     }
 
-    pub fn set_view_projection(&mut self, vp: Matrix4<f32>) {}
+    pub fn set_view_projection(&mut self, vp: Matrix4<f32>) {
+        if !self.view_projection.eq(&vp) {
+            self.view_projection = vp;
+            self.shadeless.to_world = Matrix4::invert(&vp).unwrap();
+        }
+    }
 
     pub fn set_attachments(&mut self,
                            diffuse_buffer: Arc<AttachmentImage>,

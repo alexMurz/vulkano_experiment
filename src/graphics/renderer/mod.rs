@@ -12,7 +12,7 @@ use vulkano::pipeline::viewport::Viewport;
 use vulkano::buffer::{BufferUsage, ImmutableBuffer};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use crate::graphics::renderer::lighting_system::LightingPass;
-use crate::graphics::renderer::shadow_mapping::ShadowMappingPass;
+use crate::graphics::renderer::shadow_mapping::ShadowMapping;
 
 mod geometry_pass;
 mod lighting_system;
@@ -28,6 +28,9 @@ pub struct Renderer {
     diffuse_buffer: Arc<AttachmentImage>,
     normal_buffer: Arc<AttachmentImage>,
     depth_buffer: Arc<AttachmentImage>,
+
+    // Shadow Mapper
+    shadow_mapping: ShadowMapping,
 
     // Passes
     geom_pass: GeometryPass,
@@ -95,14 +98,32 @@ impl Renderer {
             queue.device().clone(), [1, 1], Format::D16Unorm, atch_usage
         ).unwrap();
 
+        let mut shadow_mapping = ShadowMapping::new(queue.clone());
+        let mut shadow_source = shadow_mapping.new_source([2048, 2048]);
+        shadow_source.borrow_mut().view_projection = {
+//                self.geom_pass.view_projection
+            cgmath::perspective(cgmath::Deg(90.0), 1.0, 0.1, 10.0)
+//                cgmath::ortho(-5.0, 5.0, -5.0, 5.0, -10.0, 10.0)
+                * Matrix4::look_at(Point3::new(1.0,-3.0, 1.0), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
+        };
+
         let geom_pass = GeometryPass::new(
             queue.clone(),
             Subpass::from(render_pass.clone(), 0).unwrap()
         );
-        let lighting_pass = LightingPass::new(
+        let mut lighting_pass = LightingPass::new(
             queue.clone(),
+            shadow_source.borrow().image.clone(),
             Subpass::from(render_pass.clone(), 1).unwrap()
         );
+        lighting_pass.shadeless.shadow_biased = {
+            Matrix4::new(
+                0.5, 0.0, 0.0, 0.0,
+                0.0, 0.5, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.5, 0.5, 0.0, 1.0
+            ) * shadow_source.borrow().view_projection
+        };
 
         Self {
             queue,
@@ -113,6 +134,7 @@ impl Renderer {
             normal_buffer,
             depth_buffer,
 
+            shadow_mapping,
             geom_pass,
             lighting_pass
         }
@@ -135,6 +157,7 @@ impl Renderer {
     }
 
     pub fn set_view_projection(&mut self, view_projection: Matrix4<f32>) {
+//        self.shadow_mapping.set_view_projection(view_projection);
         self.geom_pass.set_view_projection(view_projection);
         self.lighting_pass.set_view_projection(view_projection);
     }
@@ -190,6 +213,10 @@ impl Renderer {
                 .build().unwrap()
         );
 
+        // Prepare shadow map
+        let shadow_future = self.shadow_mapping.render(geometry)
+            .execute(self.queue.clone()).unwrap()
+            .flush().unwrap();
 
         let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
             self.queue.device().clone(), self.queue.family()
@@ -212,9 +239,10 @@ impl Renderer {
                 .execute_commands(self.lighting_pass.render(&self.dyn_state)).unwrap()
         };
 
-        Box::new(cbb.end_render_pass().unwrap()
-            .build().unwrap()
-            .execute_after(prev_future, self.queue.clone()).unwrap()
+        let cb = cbb.end_render_pass().unwrap().build().unwrap();
+
+        Box::new(
+            cb.execute_after(prev_future, self.queue.clone()).unwrap()
         )
     }
 

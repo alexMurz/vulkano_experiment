@@ -70,6 +70,16 @@ impl Vertex3D {
 }
 vulkano::impl_vertex!(Vertex3D, position, color, normal, flat_shading, uv, material_id);
 
+// Simplified vertex for working with screening
+#[derive(Default, Copy, Clone)]
+pub struct ScreenVertex {
+    position: [f32; 2]
+}
+impl ScreenVertex {
+    pub fn new(x: f32, y: f32) -> Self { Self { position: [x, y] } }
+}
+vulkano::impl_vertex!(ScreenVertex, position);
+
 pub trait MeshAccess {
     fn get_vbo(&self) -> Arc<dyn BufferAccess + Send + Sync>;
 

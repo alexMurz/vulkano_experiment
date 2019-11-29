@@ -11,7 +11,8 @@ use vulkano::descriptor::DescriptorSet;
 use cgmath::{ Matrix4, SquareMatrix };
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState};
-use vulkano::image::AttachmentImage;
+use vulkano::image::{AttachmentImage, ImageAccess, ImageViewAccess};
+use vulkano::sampler::{Sampler, Filter, MipmapMode, SamplerAddressMode, BorderColor};
 
 // Use given geometry and other stuff to render it all into final image
 // Apply light sources in additive manner
@@ -39,17 +40,65 @@ mod fs {
 
 
 layout(input_attachment_index = 0, set = 0, binding = 0) uniform subpassInput u_diffuse;
-layout(input_attachment_index = 1, set = 0, binding = 1) uniform subpassInput u_normals;
+layout(input_attachment_index = 1, set = 0, binding = 1) uniform subpassInput u_normal;
 layout(input_attachment_index = 2, set = 0, binding = 2) uniform subpassInput u_depth;
 
 layout(location = 0) out vec4 s_color;
 
+layout(set = 0, binding = 3) uniform sampler2D u_shadow;
+
 layout(location = 0) in vec2 v_screen_coords;
+
+layout(push_constant) uniform PushData {
+    mat4 to_world;
+    mat4 shadow_biased;
+} push;
+
+
+vec2 poissonDisk[4] = vec2[](
+  vec2( -0.94201624, -0.39906216 ),
+  vec2( 0.94558609, -0.76890725 ),
+  vec2( -0.094184101, -0.92938870 ),
+  vec2( 0.34495938, 0.29387760 )
+);
+float spread = 700.0;
+
+// #define SHADOW_POISSON
+float sampleShadow(vec4 shadow_coord, float bias) {
+    float shade = 1.0;
+#ifdef SHADOW_POISSON
+    for (int i=0;i<4;i++){
+        if (texture(u_shadow, shadow_coord.xy + poissonDisk[i]/spread).r < shadow_coord.z - bias) shade -= 0.2;
+    }
+#else
+    if (texture(u_shadow, shadow_coord.xy).r < shadow_coord.z - bias) shade = 0.0;
+#endif
+    return shade;
+}
 
 void main() {
     float depth = subpassLoad(u_depth).x;
     if (depth >= 1.0) { discard; }
-    s_color = subpassLoad(u_diffuse);
+
+    vec4 world = push.to_world * vec4(v_screen_coords, depth, 1.0);
+    world /= world.w;
+    vec2 uv = v_screen_coords.xy * vec2(0.5, 0.5) + vec2(0.5, 0.5);
+    vec3 normal = normalize(subpassLoad(u_normal).xyz);
+    vec3 col = subpassLoad(u_diffuse).rgb;
+
+    vec3 light_pos = vec3(0.0, -3.0, 0.0);
+    vec3 L = normalize(light_pos - world.xyz);
+    float cosTheta = dot(L, normal);
+
+    float light_percent = max(abs(cosTheta), 0.0);
+    float light_distance = length(L) / 20.0;
+    light_percent *= 1.0 / exp(light_distance);
+
+    vec4 shadow_coord = push.shadow_biased * world;
+    shadow_coord /= shadow_coord.w;
+    float shade = sampleShadow(shadow_coord, 0.05*tan(acos(-cosTheta)));
+
+    s_color = vec4(col * shade * light_percent, 1.0);
 }"
     }
 }
@@ -61,9 +110,17 @@ pub struct Shadeless {
     shadeless_pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
     // Desc set with attachments
     attachment_set: Option<Arc<dyn DescriptorSet + Send + Sync>>,
+
+    // Sampler
+    sampler: Arc<Sampler>,
+    shadow_image: Arc<dyn ImageViewAccess + Send + Sync>,
+
+    // Push constants
+    pub to_world: Matrix4<f32>,
+    pub shadow_biased: Matrix4<f32>,
 }
 impl Shadeless {
-    pub fn new<R>(queue: Arc<Queue>, subpass: Subpass<R>) -> Self
+    pub fn new<R>(queue: Arc<Queue>, shadow_image: Arc<dyn ImageViewAccess + Send + Sync>, subpass: Subpass<R>) -> Self
         where R: RenderPassAbstract + Send + Sync + 'static
     {
         let shadeless_pipeline = {
@@ -96,10 +153,23 @@ impl Shadeless {
                 .unwrap()) as Arc<dyn GraphicsPipelineAbstract + Send + Sync>
         };
 
+        let sampler = Sampler::new(queue.device().clone(),
+            Filter::Linear, Filter::Linear, MipmapMode::Linear,
+            SamplerAddressMode::ClampToBorder(BorderColor::FloatOpaqueWhite),
+            SamplerAddressMode::ClampToBorder(BorderColor::FloatOpaqueWhite),
+            SamplerAddressMode::ClampToBorder(BorderColor::FloatOpaqueWhite),
+            0.0, 1.0, 0.0, 0.0,
+        ).unwrap();
+
         Self {
             queue,
             shadeless_pipeline,
             attachment_set: None,
+
+            sampler,
+            shadow_image,
+            to_world: Matrix4::identity(),
+            shadow_biased: Matrix4::identity(),
         }
     }
 
@@ -114,6 +184,7 @@ impl Shadeless {
                 .add_image(diffuse_buffer).unwrap()
                 .add_image(normal_buffer).unwrap()
                 .add_image(depth_buffer).unwrap()
+                .add_sampled_image(self.shadow_image.clone(), self.sampler.clone()).unwrap()
                 .build().unwrap()
         ));
     }
@@ -133,7 +204,10 @@ impl Shadeless {
             self.shadeless_pipeline.clone().subpass()
         ).unwrap()
             .draw(self.shadeless_pipeline.clone(), dyn_state, vec![vbo.clone()],
-                  (attachment_set), ()
+                  (attachment_set), (fs::ty::PushData {
+                    to_world: self.to_world.into(),
+                    shadow_biased: self.shadow_biased.into()
+                })
             ).unwrap();
 
         cbb.build().unwrap()

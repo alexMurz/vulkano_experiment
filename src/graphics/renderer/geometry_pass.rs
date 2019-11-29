@@ -45,7 +45,7 @@ layout(set = 0, binding = 0) uniform Matrixes {
 void main() {
     v_norm = normal;
     v_color = color.rgb;
-    v_flat_shading = 1; // flat_shading;
+    v_flat_shading = flat_shading;
 
     v_pos = (push.model * vec4(position, 1.0)).xyz;
     gl_Position = mat.vp * vec4(v_pos, 1.0);
@@ -86,7 +86,7 @@ pub struct GeometryPass {
     pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
 
     // Matrix info (used to update)
-    view_projection: Matrix4<f32>,
+    pub view_projection: Matrix4<f32>,
 
     // Matrixes Uniform
     uniform_dirty: bool, // True then uniform requires update
