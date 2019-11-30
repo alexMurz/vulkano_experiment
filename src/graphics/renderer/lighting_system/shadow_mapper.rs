@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
-use vulkano::command_buffer::{DynamicState, AutoCommandBufferBuilder, AutoCommandBuffer};
+use vulkano::command_buffer::{DynamicState, AutoCommandBufferBuilder, AutoCommandBuffer, CommandBuffer};
 use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess};
 use vulkano::framebuffer::{RenderPassAbstract, Subpass, FramebufferAbstract, Framebuffer};
 use std::cell::RefCell;
@@ -9,6 +9,8 @@ use vulkano::device::Queue;
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::format::Format;
 use crate::graphics::renderer::lighting_system::{LightSource, LightKind};
+use vulkano::sync::GpuFuture;
+use cgmath::{Matrix4, Point3, vec3};
 
 mod depth_vs {
     vulkano_shaders::shader! {
@@ -23,8 +25,7 @@ layout(push_constant) uniform PushData {
 } push;
 
 void main() {
-    vec4 pos = push.mvp * vec4(position, 1.0);
-    gl_Position = pos;
+    gl_Position = push.mvp * vec4(position, 1.0);
 }"
     }
 }
@@ -83,7 +84,7 @@ impl ShadowMapping {
                 .fragment_shader(fs.main_entry_point(), ())
                 .depth_stencil_simple_depth()
                 .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-                .cull_mode_front()
+//                .cull_mode_front()
                 .build(queue.device().clone())
                 .unwrap()) as Arc<dyn GraphicsPipelineAbstract + Send + Sync>
         };
@@ -103,7 +104,7 @@ impl ShadowMapping {
             self.queue.device().clone(), resolution, 1, Format::D16Unorm,
             ImageUsage {
                 sampled: true,
-                depth_stencil_attachment: true,
+//                depth_stencil_attachment: true,
                 .. ImageUsage::none()
             }
         ).unwrap();
@@ -113,13 +114,16 @@ impl ShadowMapping {
             .build().unwrap()
         );
 
+        println!("New image with {:?}", resolution);
+
         (framebuffer, img)
     }
 
 
     pub fn render_image<'f>(&mut self,
                         info: &mut LightKind,
-                        geometry: &Vec<&'f ObjectInstance>) -> AutoCommandBuffer
+                        geometry: &Vec<&'f ObjectInstance>)
+//        -> AutoCommandBuffer
     {
 
         let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
@@ -132,11 +136,18 @@ impl ShadowMapping {
                     let (fb, img) = self.create_source_info(cone.resolution);
                     cone.framebuffer = Some(fb);
                     cone.image = Some(img);
+                    cone.data_set = None; // Invalidate data set
                 }
+
+                let framebuffer = Arc::new(Framebuffer::start(self.render_pass.clone())
+                    .add(cone.image.as_ref().unwrap().clone()).unwrap()
+                    .build().unwrap()
+                );
+
 
                 let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
                     self.queue.device().clone(), self.queue.family()).unwrap()
-                    .begin_render_pass(cone.framebuffer.clone().unwrap(), false, vec![1.0.into()]).unwrap();
+                    .begin_render_pass(framebuffer.clone(), false, vec![1.0.into()]).unwrap();
 
                 self.dyn_state.viewports = Some(vec![Viewport {
                     origin: [0.0, 0.0],
@@ -149,12 +160,16 @@ impl ShadowMapping {
                         unimplemented!()
                     } else {
                         let vs_push = depth_vs::ty::PushData {
-                            mvp: (cone.vp * i.model_matrix()).into()
+                            mvp: {
+                                cgmath::ortho(-3.0, 3.0, -3.0, 3.0, -5.0, 5.0)
+                                    * Matrix4::look_at(Point3::new(0.0, -3.0, 0.0), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
+                                * i.model_matrix()
+                            }.into()
+                            //(cone.vp * i.model_matrix()).into()
                         };
                         cbb = cbb.draw(self.pipeline.clone(), &self.dyn_state,
                                        vec![i.get_vbo()],
-                                       (), (vs_push))
-                            .unwrap();
+                                       (), (vs_push)).unwrap();
                     }
                 }
 
@@ -163,7 +178,7 @@ impl ShadowMapping {
             _ => ()
         }
 
-        cbb.build().unwrap()
+        cbb.build().unwrap().execute(self.queue.clone()).unwrap().flush().unwrap();
     }
 
 }

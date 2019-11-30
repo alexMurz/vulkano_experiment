@@ -52,7 +52,6 @@ layout(input_attachment_index = 2, set = 0, binding = 2) uniform subpassInput u_
 layout(location = 0) out vec4 s_color;
 
 layout(set = 1, binding = 0) uniform sampler2D u_shadow;
-//layout(set = 1, binding = 1) uniform sampler u_sampler;
 
 layout(set = 1, binding = 1) uniform LightData {
     mat4 shadow_biased;
@@ -96,27 +95,32 @@ float sampleShadow(vec4 shadow_coord, float bias) {
 
 void main() {
     float depth = subpassLoad(u_depth).x;
-    if (depth >= 1.0) { discard; }
+//    if (depth >= 1.0) { discard; }
 
-    vec4 world = push.to_world * vec4(v_screen_coords, depth, 1.0);
-    world /= world.w;
-    vec2 uv = v_screen_coords.xy * vec2(0.5, 0.5) + vec2(0.5, 0.5);
-    vec3 normal = normalize(-subpassLoad(u_normal).xyz);
-    vec3 col = subpassLoad(u_diffuse).rgb;
+    vec2 uv = v_screen_coords * 0.5 + vec2(0.5, 0.5);
 
-// Do simple point light lighting sence shadow map will clamp not needed lighting
-    vec3 light_pos = lightData.light_pos; // vec3(5.0, -7.0, 5.0);
-    float light_pow = lightData.light_pow;
+    float s = texture(u_shadow, uv).r;
+    s_color = vec4(vec3(s*s*s*s), 1.0);
 
-    vec3 L = normalize(light_pos - world.xyz);
-    float cosTheta = dot(L, normal);
-
-    float light_distance = length(light_pos - world.xyz);
-    float light_percent = max(cosTheta * sqrt(1.0 - light_distance/light_pow), 0.0);
-
-    float shade = sampleShadow(lightData.shadow_biased * world, 0.05*tan(acos(cosTheta)));
-
-    s_color = vec4(col * shade * light_percent, 1.0);
+//    vec4 world = push.to_world * vec4(v_screen_coords, depth, 1.0);
+//    world /= world.w;
+//    vec2 uv = v_screen_coords.xy * vec2(0.5, 0.5) + vec2(0.5, 0.5);
+//    vec3 normal = normalize(-subpassLoad(u_normal).xyz);
+//    vec3 col = subpassLoad(u_diffuse).rgb;
+//
+//// Do simple point light lighting sence shadow map will clamp not needed lighting
+//    vec3 light_pos = lightData.light_pos; // vec3(5.0, -7.0, 5.0);
+//    float light_pow = lightData.light_pow;
+//
+//    vec3 L = normalize(light_pos - world.xyz);
+//    float cosTheta = dot(L, normal);
+//
+//    float light_distance = length(light_pos - world.xyz);
+//    float light_percent = max(cosTheta * sqrt(1.0 - light_distance/light_pow), 0.0);
+//
+//    float shade = sampleShadow(lightData.shadow_biased * world, 0.05*tan(acos(cosTheta)));
+//
+//    s_color = vec4(col * shade * light_percent, 1.0);
 }"
     }
 }
@@ -138,8 +142,6 @@ pub struct ShadedConeLight {
     // Sampler
     sampler: Arc<Sampler>,
 
-    light_data_buffer: Arc<CpuAccessibleBuffer<fs::ty::LightData>>,
-
     // Push constants
     pub to_world: Matrix4<f32>,
 }
@@ -160,19 +162,19 @@ impl ShadedConeLight {
                 .triangle_strip()
                 .viewports_dynamic_scissors_irrelevant(1)
                 .fragment_shader(fs.main_entry_point(), ())
-                .blend_collective(AttachmentBlend {
-                    enabled: true,
-                    color_op: BlendOp::Add,
-                    color_source: BlendFactor::One,
-                    color_destination: BlendFactor::One,
-                    alpha_op: BlendOp::Max,
-                    alpha_source: BlendFactor::One,
-                    alpha_destination: BlendFactor::One,
-                    mask_red: true,
-                    mask_green: true,
-                    mask_blue: true,
-                    mask_alpha: true,
-                })
+//                .blend_collective(AttachmentBlend {
+//                    enabled: true,
+//                    color_op: BlendOp::Add,
+//                    color_source: BlendFactor::One,
+//                    color_destination: BlendFactor::One,
+//                    alpha_op: BlendOp::Max,
+//                    alpha_source: BlendFactor::One,
+//                    alpha_destination: BlendFactor::One,
+//                    mask_red: true,
+//                    mask_green: true,
+//                    mask_blue: true,
+//                    mask_alpha: true,
+//                })
                 .render_pass(subpass)
                 .build(queue.device().clone())
                 .unwrap()) as Arc<dyn GraphicsPipelineAbstract + Send + Sync>
@@ -187,21 +189,12 @@ impl ShadedConeLight {
             0.0, 1.0, 0.0, 0.0,
         ).unwrap();
 
-        let light_data_buffer = CpuAccessibleBuffer::from_data(queue.device().clone(), BufferUsage::uniform_buffer(),
-            fs::ty::LightData {
-                shadow_biased: Matrix4::identity().into(),
-                light_pow: 20.0.into(),
-                light_pos: [5.0, -7.0, 5.0].into()
-            }
-        ).unwrap();
-
         Self {
             queue,
             pipeline,
             attachment_set: None,
 
             sampler,
-            light_data_buffer,
 
             to_world: Matrix4::identity(),
         }
@@ -229,10 +222,6 @@ impl ShadedConeLight {
                       dyn_state: &DynamicState) -> AutoCommandBuffer
     {
         assert!(self.attachment_set.is_some()); // Check for color, normal, depth attachments
-
-        let pos = [0.0, 0.0, 0.0];
-        let pow = 20.0;
-
         // Check is attachment exist
         assert!(cone.image.is_some());
 
@@ -241,9 +230,9 @@ impl ShadedConeLight {
             let buffer = CpuAccessibleBuffer::from_data(
                 self.queue.device().clone(), BufferUsage::uniform_buffer(),
                 fs::ty::LightData {
-                    shadow_biased: (SHADOW_BIAS * cone.vp).into(),
-                    light_pow: pow.into(),
-                    light_pos: pos.into()
+                    shadow_biased: (cone.vp).into(),
+                    light_pow: cone.pow.into(),
+                    light_pos: cone.pos.into()
                 }
             ).unwrap();
             cone.data_buffer = Some(buffer);
@@ -251,20 +240,26 @@ impl ShadedConeLight {
         else if cone.data_changed {
             // Update information in buffer then requested
             let mut writer = cone.data_buffer.as_ref().unwrap().write().unwrap();
-            writer.shadow_biased = (SHADOW_BIAS * cone.vp).into();
-            writer.light_pow = pow.into();
-            writer.light_pos = pos.into();
+            writer.shadow_biased = (cone.vp).into();
+            writer.light_pow = cone.pow.into();
+            writer.light_pos = cone.pos.into();
             cone.data_changed = false;
         }
 
         // Create descriptor set if not present
-        if cone.data_set.is_none() {
-            cone.data_set = Some(Arc::new(PersistentDescriptorSet::start(self.pipeline.clone(), 1)
-                .add_sampled_image(cone.image.clone().unwrap(), self.sampler.clone()).unwrap()
-                .add_buffer(cone.data_buffer.clone().unwrap()).unwrap()
-                .build().unwrap()
-            ));
-        }
+//        if cone.data_set.is_none() {
+//            cone.data_set = Some(Arc::new(PersistentDescriptorSet::start(self.pipeline.clone(), 1)
+//                .add_sampled_image(cone.image.as_ref().unwrap().clone(), self.sampler.clone()).unwrap()
+//                .add_buffer(cone.data_buffer.clone().unwrap()).unwrap()
+//                .build().unwrap()
+//            ));
+//        }
+
+        let data_set = Arc::new(PersistentDescriptorSet::start(self.pipeline.clone(), 1)
+            .add_sampled_image(cone.image.as_ref().unwrap().clone(), self.sampler.clone()).unwrap()
+            .add_buffer(cone.data_buffer.clone().unwrap()).unwrap()
+            .build().unwrap()
+        );
 
         let attachment_set = self.attachment_set.clone().unwrap();
 
@@ -274,7 +269,7 @@ impl ShadedConeLight {
             self.pipeline.clone().subpass()
         ).unwrap()
             .draw(self.pipeline.clone(), dyn_state, vec![vbo.clone()],
-                  (attachment_set, cone.data_set.clone().unwrap()), (fs::ty::PushData {
+                  (attachment_set, data_set), (fs::ty::PushData {
                     to_world: self.to_world.into(),
                 })
             ).unwrap();

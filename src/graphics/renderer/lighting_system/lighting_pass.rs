@@ -115,30 +115,26 @@ impl LightingPass {
         );
     }
 
-    pub fn update<'f>(&mut self, geometry: &Vec<&'f ObjectInstance>) -> AutoCommandBuffer {
-        let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
-            self.queue.device().clone(),
-            self.queue.family()
-        ).unwrap();
+    pub fn update<'f>(&mut self, geometry: &Vec<&'f ObjectInstance>) { // -> AutoCommandBuffer {
+//        let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
+//            self.queue.device().clone(),
+//            self.queue.family()
+//        ).unwrap();
         for s in self.sources.iter_mut() {
             if s.borrow().active {
                 s.borrow_mut().update();
                 if s.borrow().kind.has_shadow() {
-                    unsafe {
-                        cbb = cbb.execute_commands(self.shadow_mapper.render_image(&mut s.borrow_mut().kind, geometry)).unwrap();
-                    };
+                    self.shadow_mapper.render_image(&mut s.borrow_mut().kind, geometry);
+//                    unsafe {
+//                        cbb = cbb.execute_commands(self.shadow_mapper.render_image(&mut s.borrow_mut().kind, geometry)).unwrap();
+//                    };
                 }
             }
         }
-        cbb.build().unwrap()
+//        cbb.build().unwrap()
     }
 
-    pub fn render(&mut self, dyn_state: &DynamicState) -> AutoCommandBuffer {
-        let mut cbb = AutoCommandBufferBuilder::secondary_graphics_one_time_submit(
-            self.queue.device().clone(),
-            self.queue.family(),
-            self.ambient_light.pipeline.clone().subpass()
-        ).unwrap();
+    pub fn render(&mut self, mut cbb: AutoCommandBufferBuilder, dyn_state: &DynamicState) -> AutoCommandBufferBuilder {
         for s in self.sources.iter_mut() {
             let mut source = &mut s.borrow_mut();
             if source.active {
@@ -147,12 +143,12 @@ impl LightingPass {
                         cbb = cbb.execute_commands(self.ambient_light.render(source, self.vbo.clone(), dyn_state)).unwrap();
                     },
                     LightKind::ConeWithShadow(cone) => unsafe {
-//                        cbb = cbb.execute_commands(self.shadow_cone_light.render(cone, self.vbo.clone(), dyn_state)).unwrap();
+                        cbb = cbb.execute_commands(self.shadow_cone_light.render(cone, self.vbo.clone(), dyn_state)).unwrap();
                     },
                 }
             }
         }
-        cbb.build().unwrap()
+        cbb
     }
 
 }

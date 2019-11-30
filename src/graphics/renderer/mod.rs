@@ -107,20 +107,21 @@ impl Renderer {
         let light_count = 10;
         let light_res = [128, 128];
 
-        /* Test ambient */ if true {
+        /* Test ambient */ if false {
             let source = lighting_pass.create_source(LightKind::Ambient);
             source.borrow_mut().active = true;
-            source.borrow_mut().pow(0.5);
+            source.borrow_mut().pow(0.2);
         }
 
-        /* Test cone shadow */ if false {
+        /* Test cone shadow */ if true {
             let source = lighting_pass.create_source(LightKind::ConeWithShadow(
-                ShadowKind::Cone::with_projection(cgmath::Deg(90.0), 1.0)
+                ShadowKind::Cone::with_projection(cgmath::Deg(45.0), light_res)
             ));
             source.borrow_mut().active = true;
             source.borrow_mut().pos(1.0, -5.0, 1.0);
-            source.borrow_mut().look_at(0.0, 0.0, 0.0);
-            source.borrow_mut().pow(10.0);
+            source.borrow_mut().dir(0.0,  1.0, 0.0);
+//            source.borrow_mut().look_at(0.0, 0.0, 0.0);
+            source.borrow_mut().pow(20.0);
         }
 
 
@@ -216,7 +217,7 @@ impl Renderer {
 
         // Prepare shadow map
         // Perform updating of lighting and wait on it
-        self.lighting_pass.update(geometry).execute(self.queue.clone()).unwrap().flush().unwrap();
+        self.lighting_pass.update(geometry); // .execute(self.queue.clone()); //.unwrap().flush().unwrap();
 
         let framebuffer = Arc::new(
             Framebuffer::start(self.render_pass.clone())
@@ -245,9 +246,8 @@ impl Renderer {
         // Do Finalization
         cbb = unsafe {
             cbb = cbb.next_subpass(true).unwrap();
-            cbb = unsafe {
-                cbb.execute_commands(self.lighting_pass.render(&self.dyn_state)).unwrap()
-            };
+            cbb = self.lighting_pass.render(cbb, &self.dyn_state);
+
             // Render for all shadow sources
             // TODO Change to light sources and make light sources hold shadow data
 //            cbb = cbb.execute_commands(self.lighting_pass.render(&self.dyn_state)).unwrap();

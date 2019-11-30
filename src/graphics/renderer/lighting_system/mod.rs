@@ -48,11 +48,16 @@ pub mod ShadowKind {
 
     // Data type for data_buffer
     use crate::graphics::renderer::lighting_system::light_draw_systems::shadow_cone_light;
+    use std::ops::Deref;
 
     pub struct Cone {
         proj_rad: Rad<f32>,
         proj: Matrix4<f32>, // Projection matrix
         pub vp: Matrix4<f32>,
+
+        // Just retranslation from LightSource
+        pub pow: f32,
+        pub pos: [f32; 3],
 
         // Mapper Data
         pub resolution: [u32; 2], // Shadow resolution, managed by shadow mapper
@@ -68,7 +73,9 @@ pub mod ShadowKind {
             proj_rad: Rad(0.0),
             proj: Matrix4::identity(),
             vp: Matrix4::identity(),
-            resolution: [1, 1],
+            resolution: [256, 256],
+            pow: 20.0,
+            pos: [0.0, 0.0, 0.0],
             image: None,
             framebuffer: None,
             data_changed: true,
@@ -77,24 +84,29 @@ pub mod ShadowKind {
         }}
     }
     impl Cone {
-        pub fn with_projection<A: Into<Rad<f32>>>(angle: A, distance: f32) -> Self {
+        pub fn with_projection<A: Into<Rad<f32>>>(angle: A, resolution: [u32; 2]) -> Self {
             let mut c = Self::default();
-            c.set_projection(angle, distance);
+            c.resolution = resolution;
+            c.set_projection(angle, 20.0);
             c
         }
         pub fn set_projection<A: Into<Rad<f32>>>(&mut self, angle: A, distance: f32) {
             self.proj_rad = angle.into();
-            self.proj = cgmath::perspective(self.proj_rad, 1.0, 1.0, distance.max(1.1));
+            self.proj = cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 10.0); //distance.max(1.1));
             self.data_changed = true;
         }
         pub fn update(&mut self, pos: &[f32; 3], dir: &[f32; 3], pow: f32) {
-            // TODO: Angle from direction (0.0) for now
+            self.pos = *pos;
+            self.pow = pow;
             self.set_projection(self.proj_rad, pow);
-            self.vp = self.proj * Matrix4::look_at(
-                Point3::new(pos[0], pos[1], pos[2]),
-                Point3::new(pos[0] - dir[0], pos[1] - dir[1], pos[2] - dir[2]),
-                vec3(0.0, 1.0, 0.0)
-            );
+            self.vp = cgmath::ortho(-3.0, 3.0, -3.0, 3.0, -20.0, 20.0) // cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 20.0)
+                * Matrix4::look_at(Point3::new(5.0, -7.0, 5.0), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0));
+//                self.proj * Matrix4::look_at(
+//                Point3::new(pos[0], pos[1], pos[2]),
+//                Point3::new(0.0, 0.0, 0.0),
+//                Point3::new(pos[0] + dir[0], pos[1] + dir[1], pos[2] + dir[2]),
+//                vec3(0.0, 1.0, 0.0)
+//            );
             self.data_changed = true;
         }
     }
@@ -142,7 +154,7 @@ impl LightSource {
 
     /// Modifies dir for current pos,
     pub fn look_at(&mut self, x: f32, y: f32, z: f32) {
-        let v = Vector3::normalize(vec3(x - self.pos[0], y - self.pos[1], z - self.pos[2]));
+        let v = Vector3::normalize(vec3(self.pos[0] - x, self.pos[1] - y, self.pos[2] - z));
         self.dir(v.x, v.y, v.z)
     }
 

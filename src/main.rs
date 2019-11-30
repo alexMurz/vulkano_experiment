@@ -159,6 +159,7 @@ pub fn start() {
                     Vertex3D::from_position(face.vert[i][0], face.vert[i][1], face.vert[i][2])
                         .normal(face.norm[i][0], face.norm[i][1], face.norm[i][2])
                         .uv(face.uv[i][0], face.uv[i][1])
+                        .color(1.0, 1.0, 0.0, 1.0)
                         .flat_shading(true)
                 );
             }
@@ -206,7 +207,7 @@ pub fn start() {
         prev_time = time;
         let delta = (delta_ns as f64 / 1e9f64) as f32;
 
-        println!("FPS: {}", 1.0 / delta);
+//        println!("FPS: {}", 1.0 / delta);
 
         /* Update */{
             t += delta;
