@@ -2,7 +2,6 @@
 pub mod old_renderer;
 pub mod object;
 pub mod renderer;
-pub mod light;
 
 use cgmath::{Matrix4, SquareMatrix, Vector3, Deg, Vector4, Matrix3};
 

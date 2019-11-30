@@ -13,14 +13,17 @@ use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState};
 use vulkano::image::{AttachmentImage, ImageAccess, ImageViewAccess};
 use vulkano::sampler::{Sampler, Filter, MipmapMode, SamplerAddressMode, BorderColor};
-use crate::graphics::renderer::shadow_mapping::ShadowSource;
+
 use std::cell::RefCell;
+use crate::graphics::renderer::lighting_system::{
+    LightSource, LightKind, ShadowKind
+};
 
 // Use given geometry and other stuff to render it all into final image
 // Apply cone light source and its shadow in additive manner
 // Same rules for all kinds of lighting
 
-mod vs {
+pub mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
         src: "\
@@ -35,7 +38,7 @@ void main() {
 }"
     }
 }
-mod fs {
+pub mod fs {
     vulkano_shaders::shader!{
         ty: "fragment",
         src: "
@@ -221,44 +224,49 @@ impl ShadedConeLight {
 
 
     pub fn render<'f>(&mut self,
-                      source_ref: Arc<RefCell<ShadowSource>>,
+                      cone: &mut ShadowKind::Cone,
                       vbo: Arc<dyn BufferAccess + Send + Sync>,
                       dyn_state: &DynamicState) -> AutoCommandBuffer
     {
-        if self.attachment_set.is_none() {
-            panic!("Attachments not specified, use set_attachments");
+        assert!(self.attachment_set.is_some()); // Check for color, normal, depth attachments
+
+        let pos = [0.0, 0.0, 0.0];
+        let pow = 20.0;
+
+        // Check is attachment exist
+        assert!(cone.image.is_some());
+
+        // Prepare or generate buffer
+        if cone.data_buffer.is_none() {
+            let buffer = CpuAccessibleBuffer::from_data(
+                self.queue.device().clone(), BufferUsage::uniform_buffer(),
+                fs::ty::LightData {
+                    shadow_biased: (SHADOW_BIAS * cone.vp).into(),
+                    light_pow: pow.into(),
+                    light_pos: pos.into()
+                }
+            ).unwrap();
+            cone.data_buffer = Some(buffer);
+        }
+        else if cone.data_changed {
+            // Update information in buffer then requested
+            let mut writer = cone.data_buffer.as_ref().unwrap().write().unwrap();
+            writer.shadow_biased = (SHADOW_BIAS * cone.vp).into();
+            writer.light_pow = pow.into();
+            writer.light_pos = pos.into();
+            cone.data_changed = false;
         }
 
-        let source = source_ref.borrow();
-
-        // Write matrix data to buffer
-
-        let light_data_buffer = CpuAccessibleBuffer::from_data(
-            self.queue.device().clone(), BufferUsage::uniform_buffer(),
-            fs::ty::LightData {
-                shadow_biased: (SHADOW_BIAS * source.view_projection).into(),
-                light_pow: 20.0.into(),
-                light_pos: source.light_pos.into()
-            }
-        ).unwrap();
-
-//        {
-//            let mut writer = self.light_data_buffer.write().unwrap();
-//            writer.shadow_biased = (SHADOW_BIAS * source.view_projection).into();
-//            writer.light_pos = source.light_pos.into();
-//        }
-
-        // Create desc set TODO: Make source be owner of set
-        let light_data_set = Arc::new(
-            PersistentDescriptorSet::start(self.pipeline.clone(), 1)
-//                .add_image(source.image.clone()).unwrap()
-//                .add_sampler(self.sampler.clone()).unwrap()
-                .add_sampled_image(source.image.clone(), self.sampler.clone()).unwrap()
-                .add_buffer(light_data_buffer.clone()).unwrap()
+        // Create descriptor set if not present
+        if cone.data_set.is_none() {
+            cone.data_set = Some(Arc::new(PersistentDescriptorSet::start(self.pipeline.clone(), 1)
+                .add_sampled_image(cone.image.clone().unwrap(), self.sampler.clone()).unwrap()
+                .add_buffer(cone.data_buffer.clone().unwrap()).unwrap()
                 .build().unwrap()
-        );
+            ));
+        }
 
-        let attachment_set = self.attachment_set.as_ref().unwrap().clone();
+        let attachment_set = self.attachment_set.clone().unwrap();
 
         let mut cbb = AutoCommandBufferBuilder::secondary_graphics(
             self.queue.device().clone(),
@@ -266,12 +274,53 @@ impl ShadedConeLight {
             self.pipeline.clone().subpass()
         ).unwrap()
             .draw(self.pipeline.clone(), dyn_state, vec![vbo.clone()],
-                  (attachment_set, light_data_set), (fs::ty::PushData {
+                  (attachment_set, cone.data_set.clone().unwrap()), (fs::ty::PushData {
                     to_world: self.to_world.into(),
                 })
             ).unwrap();
 
         cbb.build().unwrap()
+//        // Write matrix data to buffer
+//
+//        let light_data_buffer = CpuAccessibleBuffer::from_data(
+//            self.queue.device().clone(), BufferUsage::uniform_buffer(),
+//            fs::ty::LightData {
+//                shadow_biased: (SHADOW_BIAS * source.view_projection).into(),
+//                light_pow: 20.0.into(),
+//                light_pos: source.light_pos.into()
+//            }
+//        ).unwrap();
+//
+////        {
+////            let mut writer = self.light_data_buffer.write().unwrap();
+////            writer.shadow_biased = (SHADOW_BIAS * source.view_projection).into();
+////            writer.light_pos = source.light_pos.into();
+////        }
+//
+//        // Create desc set TODO: Make source be owner of set
+//        let light_data_set = Arc::new(
+//            PersistentDescriptorSet::start(self.pipeline.clone(), 1)
+////                .add_image(source.image.clone()).unwrap()
+////                .add_sampler(self.sampler.clone()).unwrap()
+//                .add_sampled_image(source.image.clone(), self.sampler.clone()).unwrap()
+//                .add_buffer(light_data_buffer.clone()).unwrap()
+//                .build().unwrap()
+//        );
+//
+//        let attachment_set = self.attachment_set.as_ref().unwrap().clone();
+//
+//        let mut cbb = AutoCommandBufferBuilder::secondary_graphics(
+//            self.queue.device().clone(),
+//            self.queue.family(),
+//            self.pipeline.clone().subpass()
+//        ).unwrap()
+//            .draw(self.pipeline.clone(), dyn_state, vec![vbo.clone()],
+//                  (attachment_set, light_data_set), (fs::ty::PushData {
+//                    to_world: self.to_world.into(),
+//                })
+//            ).unwrap();
+//
+//        cbb.build().unwrap()
     }
 
 }

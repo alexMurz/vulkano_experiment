@@ -14,11 +14,9 @@ use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 
 mod geometry_pass;
 mod lighting_system;
-mod shadow_mapping;
 
-use lighting_system::LightingPass;
-use shadow_mapping::ShadowMapping;
-use crate::graphics::light::LightSystem;
+use lighting_system::lighting_pass::LightingPass;
+use lighting_system::{ LightSource, LightKind, ShadowKind };
 
 pub struct Renderer {
     // Basics
@@ -30,12 +28,6 @@ pub struct Renderer {
     diffuse_buffer: Arc<AttachmentImage>,
     normal_buffer: Arc<AttachmentImage>,
     depth_buffer: Arc<AttachmentImage>,
-
-    // Shadow Mapper
-    shadow_mapping: ShadowMapping,
-
-    // Holder of lights
-//    light_system: LightSystem
 
     // Passes
     geom_pass: GeometryPass,
@@ -103,27 +95,6 @@ impl Renderer {
             queue.device().clone(), [1, 1], Format::D16Unorm, atch_usage
         ).unwrap();
 
-        let mut shadow_mapping = ShadowMapping::new(queue.clone());
-        for i in 0..1000 {
-            let x = (i as f32 / 1000.0 * 3.1415 * 2.0).sin() * 5.0;
-            let y = (i as f32 / 1000.0 * 3.1415 * 2.0).cos() * 5.0;
-            let mut ss = shadow_mapping.new_source([8, 8]);
-            ss.borrow_mut().light_pos = [x, -5.0, y];
-            ss.borrow_mut().view_projection = {
-                cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 20.0)
-                    * Matrix4::look_at(Point3::new(x,-5.0, y), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
-
-            };
-        }
-//        let mut shadow_source1 = shadow_mapping.new_source([1024, 1024]);
-//        // Edit shadow source
-//        {
-//            shadow_source1.borrow_mut().light_pos = [3.0, -7.0, 5.0];
-//            shadow_source1.borrow_mut().view_projection = {
-//                cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 20.0)
-//                    * Matrix4::look_at(Point3::new(3.0,-7.0, 5.0), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
-//            };
-//        }
         let geom_pass = GeometryPass::new(
             queue.clone(),
             Subpass::from(render_pass.clone(), 0).unwrap()
@@ -132,6 +103,38 @@ impl Renderer {
             queue.clone(),
             Subpass::from(render_pass.clone(), 1).unwrap()
         );
+
+        let light_count = 10;
+        let light_res = [128, 128];
+
+        /* Test ambient */ if true {
+            let source = lighting_pass.create_source(LightKind::Ambient);
+            source.borrow_mut().active = true;
+            source.borrow_mut().pow(0.5);
+        }
+
+        /* Test cone shadow */ if false {
+            let source = lighting_pass.create_source(LightKind::ConeWithShadow(
+                ShadowKind::Cone::with_projection(cgmath::Deg(90.0), 1.0)
+            ));
+            source.borrow_mut().active = true;
+            source.borrow_mut().pos(1.0, -5.0, 1.0);
+            source.borrow_mut().look_at(0.0, 0.0, 0.0);
+            source.borrow_mut().pow(10.0);
+        }
+
+
+//        for i in 0..light_count {
+//            let x = (i as f32 / light_count as f32 * 3.1415 * 2.0).sin() * 5.0;
+//            let y = (i as f32 / light_count as f32 * 3.1415 * 2.0).cos() * 5.0;
+//            let mut ss = shadow_mapping.new_source(light_res);
+//            ss.borrow_mut().light_pos = [x, -5.0, y];
+//            ss.borrow_mut().view_projection = {
+//                cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 20.0)
+//                    * Matrix4::look_at(Point3::new(x,-5.0, y), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
+//
+//            };
+//        }
 
         Self {
             queue,
@@ -142,7 +145,6 @@ impl Renderer {
             normal_buffer,
             depth_buffer,
 
-            shadow_mapping,
             geom_pass,
             lighting_pass
         }
@@ -212,6 +214,10 @@ impl Renderer {
             );
         }
 
+        // Prepare shadow map
+        // Perform updating of lighting and wait on it
+        self.lighting_pass.update(geometry).execute(self.queue.clone()).unwrap().flush().unwrap();
+
         let framebuffer = Arc::new(
             Framebuffer::start(self.render_pass.clone())
                 .add(final_image.clone()).unwrap()
@@ -220,11 +226,6 @@ impl Renderer {
                 .add(self.depth_buffer.clone()).unwrap()
                 .build().unwrap()
         );
-
-        // Prepare shadow map
-        let shadow_future = self.shadow_mapping.render(geometry)
-            .execute(self.queue.clone()).unwrap()
-            .flush().unwrap();
 
         let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
             self.queue.device().clone(), self.queue.family()
@@ -244,13 +245,17 @@ impl Renderer {
         // Do Finalization
         cbb = unsafe {
             cbb = cbb.next_subpass(true).unwrap();
+            cbb = unsafe {
+                cbb.execute_commands(self.lighting_pass.render(&self.dyn_state)).unwrap()
+            };
             // Render for all shadow sources
             // TODO Change to light sources and make light sources hold shadow data
-            for l in self.shadow_mapping.get_sources().iter() {
-                if let Some(cb) = self.lighting_pass.render_source(&self.dyn_state, l.clone()) {
-                    cbb = cbb.execute_commands(cb).unwrap();
-                }
-            }
+//            cbb = cbb.execute_commands(self.lighting_pass.render(&self.dyn_state)).unwrap();
+//            for l in self.shadow_mapping.get_sources().iter() {
+//                if let Some(cb) = self.lighting_pass.render_source(&self.dyn_state, l.clone()) {
+//                    cbb = cbb.execute_commands(cb).unwrap();
+//                }
+//            }
             cbb
         };
 
