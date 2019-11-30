@@ -51,7 +51,7 @@ pub mod ShadowKind {
     use std::ops::Deref;
 
     pub struct Cone {
-        proj_rad: Rad<f32>,
+        proj_deg: f32,
         proj: Matrix4<f32>, // Projection matrix
         pub vp: Matrix4<f32>,
 
@@ -70,7 +70,7 @@ pub mod ShadowKind {
     }
     impl Default for Cone {
         fn default() -> Self { Self {
-            proj_rad: Rad(0.0),
+            proj_deg: 90.0,
             proj: Matrix4::identity(),
             vp: Matrix4::identity(),
             resolution: [256, 256],
@@ -84,29 +84,29 @@ pub mod ShadowKind {
         }}
     }
     impl Cone {
-        pub fn with_projection<A: Into<Rad<f32>>>(angle: A, resolution: [u32; 2]) -> Self {
+        pub fn with_projection(deg: f32, resolution: [u32; 2]) -> Self {
             let mut c = Self::default();
             c.resolution = resolution;
-            c.set_projection(angle, 20.0);
+            c.set_projection(deg, 20.0);
             c
         }
-        pub fn set_projection<A: Into<Rad<f32>>>(&mut self, angle: A, distance: f32) {
-            self.proj_rad = angle.into();
-            self.proj = cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 10.0); //distance.max(1.1));
+        pub fn set_projection(&mut self, deg: f32, distance: f32) {
+            self.proj_deg = deg;
+            self.proj = cgmath::perspective(cgmath::Deg(deg), 1.0, 1.0,  distance.max(1.1));
             self.data_changed = true;
         }
         pub fn update(&mut self, pos: &[f32; 3], dir: &[f32; 3], pow: f32) {
             self.pos = *pos;
             self.pow = pow;
-            self.set_projection(self.proj_rad, pow);
-            self.vp = cgmath::ortho(-3.0, 3.0, -3.0, 3.0, -20.0, 20.0) // cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 20.0)
-                * Matrix4::look_at(Point3::new(5.0, -7.0, 5.0), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0));
-//                self.proj * Matrix4::look_at(
-//                Point3::new(pos[0], pos[1], pos[2]),
-//                Point3::new(0.0, 0.0, 0.0),
-//                Point3::new(pos[0] + dir[0], pos[1] + dir[1], pos[2] + dir[2]),
-//                vec3(0.0, 1.0, 0.0)
-//            );
+            self.set_projection(self.proj_deg, pow);
+            self.vp = self.proj *
+                Matrix4::look_at(
+                Point3::new(pos[0], pos[1], pos[2]),
+                Point3::new(pos[0] + dir[0], pos[1] + dir[1], pos[2] + dir[2]),
+                vec3(0.0, 1.0, 0.0)
+            );
+
+            println!("Update VP to {:?}", pos);
             self.data_changed = true;
         }
     }
@@ -155,7 +155,7 @@ impl LightSource {
     /// Modifies dir for current pos,
     pub fn look_at(&mut self, x: f32, y: f32, z: f32) {
         let v = Vector3::normalize(vec3(self.pos[0] - x, self.pos[1] - y, self.pos[2] - z));
-        self.dir(v.x, v.y, v.z)
+        self.dir(-v.x, -v.y, -v.z)
     }
 
     pub fn col(&mut self, r: f32, g: f32, b: f32) {

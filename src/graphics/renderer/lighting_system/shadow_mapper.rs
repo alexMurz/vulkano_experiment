@@ -15,7 +15,7 @@ use cgmath::{Matrix4, Point3, vec3};
 mod depth_vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        src: "
+        src: "\
 #version 450
 
 layout(location = 0) in vec3 position;
@@ -32,7 +32,7 @@ void main() {
 mod depth_fs {
     vulkano_shaders::shader!{
         ty: "fragment",
-        src: "
+        src: "\
 #version 450
 void main() {}"
     }
@@ -52,7 +52,8 @@ pub struct ShadowMapping {
 impl ShadowMapping {
 
     pub fn new(queue: Arc<Queue>) -> Self {
-        let render_pass = Arc::new(vulkano::ordered_passes_renderpass!(queue.device().clone(),
+        let render_pass = Arc::new(vulkano::single_pass_renderpass!(
+            queue.device().clone(),
             attachments: {
                 depth: {
                     load: Clear,
@@ -61,13 +62,10 @@ impl ShadowMapping {
                     samples: 1,
                 }
             },
-            passes: [
-                {
-                    color: [],
-                    depth_stencil: {depth},
-                    input: []
-                }
-            ]
+            pass: {
+                 color: [],
+                 depth_stencil: {depth}
+            }
         ).unwrap()) as Arc<dyn RenderPassAbstract + Send + Sync>;
 
         let pipeline = {
@@ -84,9 +82,10 @@ impl ShadowMapping {
                 .fragment_shader(fs.main_entry_point(), ())
                 .depth_stencil_simple_depth()
                 .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-//                .cull_mode_front()
+                .cull_mode_front()
                 .build(queue.device().clone())
-                .unwrap()) as Arc<dyn GraphicsPipelineAbstract + Send + Sync>
+                .unwrap()
+            ) as Arc<dyn GraphicsPipelineAbstract + Send + Sync>
         };
 
 
@@ -100,21 +99,16 @@ impl ShadowMapping {
 
 
     fn create_source_info(&self, resolution: [u32; 2]) -> (Arc<dyn FramebufferAbstract + Send + Sync>, Arc<AttachmentImage>) {
-        let img = AttachmentImage::multisampled_with_usage(
-            self.queue.device().clone(), resolution, 1, Format::D16Unorm,
-            ImageUsage {
-                sampled: true,
-//                depth_stencil_attachment: true,
-                .. ImageUsage::none()
-            }
+        let img = AttachmentImage::sampled(
+            self.queue.device().clone(),
+            resolution,
+            Format::D16Unorm
         ).unwrap();
 
         let framebuffer = Arc::new(Framebuffer::start(self.render_pass.clone())
             .add(img.clone()).unwrap()
             .build().unwrap()
         );
-
-        println!("New image with {:?}", resolution);
 
         (framebuffer, img)
     }
@@ -123,7 +117,7 @@ impl ShadowMapping {
     pub fn render_image<'f>(&mut self,
                         info: &mut LightKind,
                         geometry: &Vec<&'f ObjectInstance>)
-//        -> AutoCommandBuffer
+        -> AutoCommandBuffer
     {
 
         let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
@@ -139,33 +133,24 @@ impl ShadowMapping {
                     cone.data_set = None; // Invalidate data set
                 }
 
-                let framebuffer = Arc::new(Framebuffer::start(self.render_pass.clone())
-                    .add(cone.image.as_ref().unwrap().clone()).unwrap()
-                    .build().unwrap()
-                );
-
-
-                let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
-                    self.queue.device().clone(), self.queue.family()).unwrap()
-                    .begin_render_pass(framebuffer.clone(), false, vec![1.0.into()]).unwrap();
+                cbb = cbb.begin_render_pass(
+                    cone.framebuffer.as_ref().unwrap().clone(),
+                    false,
+                    vec![1.0f32.into()]
+                ).unwrap();
 
                 self.dyn_state.viewports = Some(vec![Viewport {
                     origin: [0.0, 0.0],
-                    dimensions: [cone.resolution[0] as _, cone.resolution[1] as _],
+                    dimensions: [cone.resolution[0] as f32, cone.resolution[1] as f32],
                     depth_range: 0.0 .. 1.0
                 }]);
 
-                for i in geometry {
+                for i in geometry.iter() {
                     if i.has_ibo() {
                         unimplemented!()
                     } else {
                         let vs_push = depth_vs::ty::PushData {
-                            mvp: {
-                                cgmath::ortho(-3.0, 3.0, -3.0, 3.0, -5.0, 5.0)
-                                    * Matrix4::look_at(Point3::new(0.0, -3.0, 0.0), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
-                                * i.model_matrix()
-                            }.into()
-                            //(cone.vp * i.model_matrix()).into()
+                            mvp: (cone.vp * i.model_matrix()).into()
                         };
                         cbb = cbb.draw(self.pipeline.clone(), &self.dyn_state,
                                        vec![i.get_vbo()],
@@ -178,7 +163,7 @@ impl ShadowMapping {
             _ => ()
         }
 
-        cbb.build().unwrap().execute(self.queue.clone()).unwrap().flush().unwrap();
+        cbb.build().unwrap()
     }
 
 }

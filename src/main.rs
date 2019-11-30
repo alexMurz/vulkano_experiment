@@ -77,10 +77,14 @@ pub fn start() {
         dev
     };
 
+    let default_width = 800.0;
+    let default_height = 600.0;
+    let default_aspect = (default_width / default_height) as f32;
+
     let surface = {
         let mut wb = winit::WindowBuilder::new()
             .with_title("Title")
-            .with_dimensions((800.0, 600.0).into())
+            .with_dimensions((default_width, default_height).into())
             .with_min_dimensions((640.0, 480.0).into())
             .with_max_dimensions((1920.0, 1080.0).into())
             .with_resizable(true);
@@ -133,14 +137,14 @@ pub fn start() {
     let mut renderer = renderer::Renderer::new(main_queue.clone(), swapchain.format());
 
     let mut camera = {
-        let projection = cgmath::perspective(cgmath::Deg(60.0), 1.0, 0.01, 100.0);
+        let projection = cgmath::perspective(cgmath::Deg(60.0), default_aspect, 0.01, 100.0);
         Camera::new(projection)
     };
 
     let (mut floor_object, mut test_object) = {
         use graphics::object::{ MeshData, Vertex3D, ObjectInstance };
 
-        let floor_size = 15.0;
+        let floor_size = 150.0;
         let floor_mesh = renderer.generate_mesh_from_data(vec![
             Vertex3D::from_position(-floor_size, 0.0,-floor_size).flat_shading(true),
             Vertex3D::from_position(-floor_size, 0.0, floor_size).flat_shading(true),
@@ -207,7 +211,7 @@ pub fn start() {
         prev_time = time;
         let delta = (delta_ns as f64 / 1e9f64) as f32;
 
-//        println!("FPS: {}", 1.0 / delta);
+        println!("FPS: {}", 1.0 / delta);
 
         /* Update */{
             t += delta;
@@ -258,6 +262,13 @@ pub fn start() {
         };
 
         renderer.set_view_projection(camera.get_view_projection());
+//        renderer.set_view_projection(cgmath::ortho(-3.0, 3.0, -3.0, 3.0, -15.0, 15.0) *
+//                                         Matrix4::look_at(
+//                                             Point3::new(5.0, -5.0, 5.0),
+//                                             Point3::new(0.0, 0.0, 0.0),
+//                                             vec3(0.0, 1.0, 0.0)
+//                                         ));
+
         let future = renderer.render(
             prev_sync.join(acquire_future),
             images[image_num].clone(),

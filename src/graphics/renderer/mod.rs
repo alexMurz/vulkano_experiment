@@ -104,26 +104,26 @@ impl Renderer {
             Subpass::from(render_pass.clone(), 1).unwrap()
         );
 
-        let light_count = 10;
-        let light_res = [128, 128];
+        let light_count = 100;
+        let light_res = [64, 64];
 
-        /* Test ambient */ if false {
+        /* Test ambient */ if true {
             let source = lighting_pass.create_source(LightKind::Ambient);
             source.borrow_mut().active = true;
-            source.borrow_mut().pow(0.2);
+            source.borrow_mut().pow(0.05);
         }
 
-        /* Test cone shadow */ if true {
+
+        for i in 0..light_count {
+            let x = (i as f32 / light_count as f32 * 3.1415 * 2.0).sin() * 5.0;
+            let y = (i as f32 / light_count as f32 * 3.1415 * 2.0).cos() * 5.0;
             let source = lighting_pass.create_source(LightKind::ConeWithShadow(
-                ShadowKind::Cone::with_projection(cgmath::Deg(45.0), light_res)
+                ShadowKind::Cone::with_projection(45.0, light_res)
             ));
-            source.borrow_mut().active = true;
-            source.borrow_mut().pos(1.0, -5.0, 1.0);
-            source.borrow_mut().dir(0.0,  1.0, 0.0);
-//            source.borrow_mut().look_at(0.0, 0.0, 0.0);
-            source.borrow_mut().pow(20.0);
+            source.borrow_mut().pos(x, -2.0, y);
+            source.borrow_mut().look_at(0.0, 0.0, 0.0);
+            source.borrow_mut().pow(10.0);
         }
-
 
 //        for i in 0..light_count {
 //            let x = (i as f32 / light_count as f32 * 3.1415 * 2.0).sin() * 5.0;
@@ -168,7 +168,6 @@ impl Renderer {
     }
 
     pub fn set_view_projection(&mut self, view_projection: Matrix4<f32>) {
-//        self.shadow_mapping.set_view_projection(view_projection);
         self.geom_pass.set_view_projection(view_projection);
         self.lighting_pass.set_view_projection(view_projection);
     }
@@ -217,7 +216,7 @@ impl Renderer {
 
         // Prepare shadow map
         // Perform updating of lighting and wait on it
-        self.lighting_pass.update(geometry); // .execute(self.queue.clone()); //.unwrap().flush().unwrap();
+        let shadow_cb = self.lighting_pass.update(geometry);
 
         let framebuffer = Arc::new(
             Framebuffer::start(self.render_pass.clone())
@@ -228,41 +227,33 @@ impl Renderer {
                 .build().unwrap()
         );
 
-        let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
+        let mut main_cbb = AutoCommandBufferBuilder::primary_one_time_submit(
             self.queue.device().clone(), self.queue.family()
         ).unwrap()
             .begin_render_pass(framebuffer.clone(), true, vec![
-                [0.1, 0.1, 0.2, 1.0].into(),
+                [0.0, 0.0, 0.0, 1.0].into(),
                 [0.0, 0.0, 0.0, 0.0].into(),
                 [0.0, 0.0, 0.0, 0.0].into(),
                 1.0.into(),
             ]).unwrap();
 
         // Do geometry pass
-        cbb = unsafe {
-            cbb.execute_commands(self.geom_pass.render(&self.dyn_state, geometry)).unwrap()
+        main_cbb = unsafe {
+            main_cbb.execute_commands(self.geom_pass.render(&self.dyn_state, geometry)).unwrap()
         };
 
         // Do Finalization
-        cbb = unsafe {
-            cbb = cbb.next_subpass(true).unwrap();
-            cbb = self.lighting_pass.render(cbb, &self.dyn_state);
-
-            // Render for all shadow sources
-            // TODO Change to light sources and make light sources hold shadow data
-//            cbb = cbb.execute_commands(self.lighting_pass.render(&self.dyn_state)).unwrap();
-//            for l in self.shadow_mapping.get_sources().iter() {
-//                if let Some(cb) = self.lighting_pass.render_source(&self.dyn_state, l.clone()) {
-//                    cbb = cbb.execute_commands(cb).unwrap();
-//                }
-//            }
-            cbb
+        main_cbb = unsafe {
+            main_cbb = main_cbb.next_subpass(true).unwrap();
+            main_cbb = self.lighting_pass.render(main_cbb, &self.dyn_state);
+            main_cbb
         };
 
-        let cb = cbb.end_render_pass().unwrap().build().unwrap();
+        let main_cb = main_cbb.end_render_pass().unwrap().build().unwrap();
 
-        Box::new(
-            cb.execute_after(prev_future, self.queue.clone()).unwrap()
+        Box::new(prev_future
+                     .then_execute(self.queue.clone(), shadow_cb).unwrap()
+                     .then_execute(self.queue.clone(), main_cb).unwrap()
         )
     }
 

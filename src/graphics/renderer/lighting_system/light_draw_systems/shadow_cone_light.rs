@@ -95,32 +95,26 @@ float sampleShadow(vec4 shadow_coord, float bias) {
 
 void main() {
     float depth = subpassLoad(u_depth).x;
-//    if (depth >= 1.0) { discard; }
+    if (depth >= 1.0) { discard; }
 
-    vec2 uv = v_screen_coords * 0.5 + vec2(0.5, 0.5);
+    vec4 world = push.to_world * vec4(v_screen_coords, depth, 1.0);
+    world /= world.w;
+    vec3 normal = normalize(-subpassLoad(u_normal).xyz);
+    vec3 col = subpassLoad(u_diffuse).rgb;
 
-    float s = texture(u_shadow, uv).r;
-    s_color = vec4(vec3(s*s*s*s), 1.0);
+// Do simple point light lighting sence shadow map will clamp not needed lighting
+    vec3 light_pos = lightData.light_pos; // vec3(5.0, -7.0, 5.0);
+    float light_pow = lightData.light_pow;
 
-//    vec4 world = push.to_world * vec4(v_screen_coords, depth, 1.0);
-//    world /= world.w;
-//    vec2 uv = v_screen_coords.xy * vec2(0.5, 0.5) + vec2(0.5, 0.5);
-//    vec3 normal = normalize(-subpassLoad(u_normal).xyz);
-//    vec3 col = subpassLoad(u_diffuse).rgb;
-//
-//// Do simple point light lighting sence shadow map will clamp not needed lighting
-//    vec3 light_pos = lightData.light_pos; // vec3(5.0, -7.0, 5.0);
-//    float light_pow = lightData.light_pow;
-//
-//    vec3 L = normalize(light_pos - world.xyz);
-//    float cosTheta = dot(L, normal);
-//
-//    float light_distance = length(light_pos - world.xyz);
-//    float light_percent = max(cosTheta * sqrt(1.0 - light_distance/light_pow), 0.0);
-//
-//    float shade = sampleShadow(lightData.shadow_biased * world, 0.05*tan(acos(cosTheta)));
-//
-//    s_color = vec4(col * shade * light_percent, 1.0);
+    vec3 L = normalize(light_pos - world.xyz);
+    float cosTheta = dot(L, normal);
+
+    float light_distance = length(light_pos - world.xyz);
+    float light_percent = max(cosTheta * sqrt(1.0 - light_distance/light_pow), 0.0);
+
+    float shade = sampleShadow(lightData.shadow_biased * world, 0.05*tan(acos(cosTheta)));
+
+    s_color = vec4(col * light_percent * shade, 1.0);
 }"
     }
 }
@@ -162,19 +156,19 @@ impl ShadedConeLight {
                 .triangle_strip()
                 .viewports_dynamic_scissors_irrelevant(1)
                 .fragment_shader(fs.main_entry_point(), ())
-//                .blend_collective(AttachmentBlend {
-//                    enabled: true,
-//                    color_op: BlendOp::Add,
-//                    color_source: BlendFactor::One,
-//                    color_destination: BlendFactor::One,
-//                    alpha_op: BlendOp::Max,
-//                    alpha_source: BlendFactor::One,
-//                    alpha_destination: BlendFactor::One,
-//                    mask_red: true,
-//                    mask_green: true,
-//                    mask_blue: true,
-//                    mask_alpha: true,
-//                })
+                .blend_collective(AttachmentBlend {
+                    enabled: true,
+                    color_op: BlendOp::Add,
+                    color_source: BlendFactor::One,
+                    color_destination: BlendFactor::One,
+                    alpha_op: BlendOp::Max,
+                    alpha_source: BlendFactor::One,
+                    alpha_destination: BlendFactor::One,
+                    mask_red: true,
+                    mask_green: true,
+                    mask_blue: true,
+                    mask_alpha: true,
+                })
                 .render_pass(subpass)
                 .build(queue.device().clone())
                 .unwrap()) as Arc<dyn GraphicsPipelineAbstract + Send + Sync>
@@ -230,7 +224,7 @@ impl ShadedConeLight {
             let buffer = CpuAccessibleBuffer::from_data(
                 self.queue.device().clone(), BufferUsage::uniform_buffer(),
                 fs::ty::LightData {
-                    shadow_biased: (cone.vp).into(),
+                    shadow_biased: (SHADOW_BIAS * cone.vp).into(),
                     light_pow: cone.pow.into(),
                     light_pos: cone.pos.into()
                 }
@@ -240,26 +234,20 @@ impl ShadedConeLight {
         else if cone.data_changed {
             // Update information in buffer then requested
             let mut writer = cone.data_buffer.as_ref().unwrap().write().unwrap();
-            writer.shadow_biased = (cone.vp).into();
+            writer.shadow_biased = (SHADOW_BIAS * cone.vp).into();
             writer.light_pow = cone.pow.into();
             writer.light_pos = cone.pos.into();
             cone.data_changed = false;
         }
 
         // Create descriptor set if not present
-//        if cone.data_set.is_none() {
-//            cone.data_set = Some(Arc::new(PersistentDescriptorSet::start(self.pipeline.clone(), 1)
-//                .add_sampled_image(cone.image.as_ref().unwrap().clone(), self.sampler.clone()).unwrap()
-//                .add_buffer(cone.data_buffer.clone().unwrap()).unwrap()
-//                .build().unwrap()
-//            ));
-//        }
-
-        let data_set = Arc::new(PersistentDescriptorSet::start(self.pipeline.clone(), 1)
-            .add_sampled_image(cone.image.as_ref().unwrap().clone(), self.sampler.clone()).unwrap()
-            .add_buffer(cone.data_buffer.clone().unwrap()).unwrap()
-            .build().unwrap()
-        );
+        if cone.data_set.is_none() {
+            cone.data_set = Some(Arc::new(PersistentDescriptorSet::start(self.pipeline.clone(), 1)
+                .add_sampled_image(cone.image.clone().unwrap(), self.sampler.clone()).unwrap()
+                .add_buffer(cone.data_buffer.clone().unwrap()).unwrap()
+                .build().unwrap()
+            ));
+        }
 
         let attachment_set = self.attachment_set.clone().unwrap();
 
@@ -269,12 +257,13 @@ impl ShadedConeLight {
             self.pipeline.clone().subpass()
         ).unwrap()
             .draw(self.pipeline.clone(), dyn_state, vec![vbo.clone()],
-                  (attachment_set, data_set), (fs::ty::PushData {
+                  (attachment_set, cone.data_set.clone().unwrap()), (fs::ty::PushData {
                     to_world: self.to_world.into(),
                 })
             ).unwrap();
 
         cbb.build().unwrap()
+
 //        // Write matrix data to buffer
 //
 //        let light_data_buffer = CpuAccessibleBuffer::from_data(

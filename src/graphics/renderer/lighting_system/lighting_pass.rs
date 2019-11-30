@@ -115,23 +115,24 @@ impl LightingPass {
         );
     }
 
-    pub fn update<'f>(&mut self, geometry: &Vec<&'f ObjectInstance>) { // -> AutoCommandBuffer {
-//        let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
-//            self.queue.device().clone(),
-//            self.queue.family()
-//        ).unwrap();
+    pub fn update<'f>(&mut self, geometry: &Vec<&'f ObjectInstance>)  -> AutoCommandBuffer {
+        let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
+            self.queue.device().clone(),
+            self.queue.family()
+        ).unwrap();
         for s in self.sources.iter_mut() {
             if s.borrow().active {
                 s.borrow_mut().update();
                 if s.borrow().kind.has_shadow() {
-                    self.shadow_mapper.render_image(&mut s.borrow_mut().kind, geometry);
-//                    unsafe {
-//                        cbb = cbb.execute_commands(self.shadow_mapper.render_image(&mut s.borrow_mut().kind, geometry)).unwrap();
-//                    };
+                    unsafe {
+                        cbb = cbb.execute_commands(self.shadow_mapper.render_image(
+                            &mut s.borrow_mut().kind, geometry
+                        )).unwrap();
+                    };
                 }
             }
         }
-//        cbb.build().unwrap()
+        cbb.build().unwrap()
     }
 
     pub fn render(&mut self, mut cbb: AutoCommandBufferBuilder, dyn_state: &DynamicState) -> AutoCommandBufferBuilder {
@@ -152,10 +153,3 @@ impl LightingPass {
     }
 
 }
-
-//    pub fn render_source(&mut self, dyn_state: &DynamicState, light: Arc<RefCell<ShadowSource>>) -> Option<AutoCommandBuffer>
-//    {
-//        if !light.borrow().active { None }
-//        else { Some(self.shadow_cone_light.render(light, self.vbo.clone(), dyn_state)) }
-//    }
-//}
