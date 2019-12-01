@@ -55,6 +55,7 @@ layout(location = 0) in vec2 v_screen_coords;
 
 layout(push_constant) uniform PushData {
     float pow;
+    vec3 col;
 } push;
 
 void main() {
@@ -63,7 +64,7 @@ void main() {
 
     vec3 col = subpassLoad(u_diffuse).rgb;
 
-    s_color = vec4(col * push.pow, 1.0);
+    s_color = vec4(col * push.pow * push.col, 1.0);
 }"
     }
 }
@@ -155,53 +156,12 @@ impl AmbientLight {
             .draw(self.pipeline.clone(), dyn_state, vec![vbo.clone()],
                   (attachment_set), (fs::ty::PushData {
                     pow: source.get_pow().into(),
+                    _dummy0: [0; 12].into(),
+                    col: source.get_col().into(),
                 })
             ).unwrap();
 
         cbb.build().unwrap()
-
-        
-//        // Write matrix data to buffer
-//
-//        let light_data_buffer = CpuAccessibleBuffer::from_data(
-//            self.queue.device().clone(), BufferUsage::uniform_buffer(),
-//            fs::ty::LightData {
-//                shadow_biased: (SHADOW_BIAS * source.view_projection).into(),
-//                light_pow: 20.0.into(),
-//                light_pos: source.light_pos.into()
-//            }
-//        ).unwrap();
-//
-////        {
-////            let mut writer = self.light_data_buffer.write().unwrap();
-////            writer.shadow_biased = (SHADOW_BIAS * source.view_projection).into();
-////            writer.light_pos = source.light_pos.into();
-////        }
-//
-//        // Create desc set TODO: Make source be owner of set
-//        let light_data_set = Arc::new(
-//            PersistentDescriptorSet::start(self.pipeline.clone(), 1)
-////                .add_image(source.image.clone()).unwrap()
-////                .add_sampler(self.sampler.clone()).unwrap()
-//                .add_sampled_image(source.image.clone(), self.sampler.clone()).unwrap()
-//                .add_buffer(light_data_buffer.clone()).unwrap()
-//                .build().unwrap()
-//        );
-//
-//        let attachment_set = self.attachment_set.as_ref().unwrap().clone();
-//
-//        let mut cbb = AutoCommandBufferBuilder::secondary_graphics(
-//            self.queue.device().clone(),
-//            self.queue.family(),
-//            self.pipeline.clone().subpass()
-//        ).unwrap()
-//            .draw(self.pipeline.clone(), dyn_state, vec![vbo.clone()],
-//                  (attachment_set, light_data_set), (fs::ty::PushData {
-//                    to_world: self.to_world.into(),
-//                })
-//            ).unwrap();
-//
-//        cbb.build().unwrap()
     }
 
 }

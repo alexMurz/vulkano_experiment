@@ -51,48 +51,15 @@ layout(input_attachment_index = 2, set = 0, binding = 2) uniform subpassInput u_
 
 layout(location = 0) out vec4 s_color;
 
-layout(set = 1, binding = 0) uniform sampler2D u_shadow;
-
-layout(set = 1, binding = 1) uniform LightData {
-    mat4 shadow_biased;
-    vec3 light_pos;
-    vec3 light_col;
-    float light_pow;
-} lightData;
-
 layout(location = 0) in vec2 v_screen_coords;
 
 layout(push_constant) uniform PushData {
     mat4 to_world;
+    vec3 light_pos;
+    vec3 light_col;
+    float light_pow;
 } push;
 
-
-vec2 poissonDisk[4] = vec2[](
-  vec2( -0.94201624, -0.39906216 ),
-  vec2( 0.94558609, -0.76890725 ),
-  vec2( -0.094184101, -0.92938870 ),
-  vec2( 0.34495938, 0.29387760 )
-);
-float spread = 700.0;
-
-//#define SHADOW_POISSON
-float sampleShadow(vec4 shadow_coord, float bias) {
-    shadow_coord.xy /= shadow_coord.w;
-// Sence its a cone, clamp circle on `uvs`
-    vec2 shadow_space_uv = shadow_coord.xy * 2 - vec2(1.0, 1.0);
-    if (length(shadow_space_uv) >= 1.0) return 0.0;
-// Only shadow_coord.xy was devided by w, use w to divide z with bias attached
-// To account for perspective projection, use shadow_coord
-    float shade = 1.0;
-#ifdef SHADOW_POISSON
-    for (int i=0;i<4;i++){
-        if (texture(u_shadow, shadow_coord.xy + poissonDisk[i]/spread).r < (shadow_coord.z - bias) / shadow_coord.w) shade -= 0.2;
-    }
-#else
-    if (texture(u_shadow, shadow_coord.xy).r < (shadow_coord.z - bias) / shadow_coord.w) shade = 0.0;
-#endif
-    return shade;
-}
 
 void main() {
     float depth = subpassLoad(u_depth).x;
@@ -103,9 +70,8 @@ void main() {
     vec3 normal = normalize(-subpassLoad(u_normal).xyz);
     vec3 col = subpassLoad(u_diffuse).rgb;
 
-// Do simple point light lighting sence shadow map will clamp not needed lighting
-    vec3 light_pos = lightData.light_pos;
-    float light_pow = lightData.light_pow;
+    vec3 light_pos = push.light_pos;
+    float light_pow = push.light_pow;
 
     vec3 L = normalize(light_pos - world.xyz);
     float cosTheta = dot(L, normal);
@@ -113,21 +79,13 @@ void main() {
     float light_distance = length(light_pos - world.xyz);
     float light_percent = max(cosTheta * sqrt(1.0 - light_distance/light_pow), 0.0);
 
-    float shade = sampleShadow(lightData.shadow_biased * world, 0.05*tan(acos(cosTheta)));
-
-    s_color = vec4(col * light_percent * shade * lightData.light_col, 1.0);
+    s_color = vec4(col * light_percent * push.light_col, 1.0);
 }"
     }
 }
 
-const SHADOW_BIAS: Matrix4<f32> = Matrix4::new(
-    0.5, 0.0, 0.0, 0.0,
-    0.0, 0.5, 0.0, 0.0,
-    0.0, 0.0, 1.0, 0.0,
-    0.5, 0.5, 0.0, 1.0,
-);
 
-pub struct ShadedConeLight {
+pub struct PointLight {
     queue: Arc<Queue>,
     // No lighting or shadows, only material color
     pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
@@ -140,7 +98,7 @@ pub struct ShadedConeLight {
     // Push constants
     pub to_world: Matrix4<f32>,
 }
-impl ShadedConeLight {
+impl PointLight {
     pub fn new<R>(queue: Arc<Queue>,
                   subpass: Subpass<R>) -> Self
         where R: RenderPassAbstract + Send + Sync + 'static
@@ -212,46 +170,11 @@ impl ShadedConeLight {
 
 
     pub fn render<'f>(&mut self,
-                      cone: &mut ShadowKind::Cone,
+                      source: &mut LightSource,
                       vbo: Arc<dyn BufferAccess + Send + Sync>,
                       dyn_state: &DynamicState) -> AutoCommandBuffer
     {
         assert!(self.attachment_set.is_some()); // Check for color, normal, depth attachments
-        // Check is attachment exist
-        assert!(cone.image.is_some());
-
-        // Prepare or generate buffer
-        if cone.data_buffer.is_none() {
-            let buffer = CpuAccessibleBuffer::from_data(
-                self.queue.device().clone(), BufferUsage::uniform_buffer(),
-                fs::ty::LightData {
-                    _dummy0: [0; 4].into(),
-                    shadow_biased: (SHADOW_BIAS * cone.vp).into(),
-                    light_pos: cone.pos.into(),
-                    light_col: cone.col.into(),
-                    light_pow: cone.pow.into(),
-                }
-            ).unwrap();
-            cone.data_buffer = Some(buffer);
-        }
-        else if cone.data_changed {
-            // Update information in buffer then requested
-            let mut writer = cone.data_buffer.as_ref().unwrap().write().unwrap();
-            writer.shadow_biased = (SHADOW_BIAS * cone.vp).into();
-            writer.light_pos = cone.pos.into();
-            writer.light_col = cone.col.into();
-            writer.light_pow = cone.pow.into();
-            cone.data_changed = false;
-        }
-
-        // Create descriptor set if not present
-        if cone.data_set.is_none() {
-            cone.data_set = Some(Arc::new(PersistentDescriptorSet::start(self.pipeline.clone(), 1)
-                .add_sampled_image(cone.image.clone().unwrap(), self.sampler.clone()).unwrap()
-                .add_buffer(cone.data_buffer.clone().unwrap()).unwrap()
-                .build().unwrap()
-            ));
-        }
 
         let attachment_set = self.attachment_set.clone().unwrap();
 
@@ -261,8 +184,12 @@ impl ShadedConeLight {
             self.pipeline.clone().subpass()
         ).unwrap()
             .draw(self.pipeline.clone(), dyn_state, vec![vbo.clone()],
-                  (attachment_set, cone.data_set.clone().unwrap()), (fs::ty::PushData {
+                  (attachment_set), (fs::ty::PushData {
+                    _dummy0: [0; 4].into(),
                     to_world: self.to_world.into(),
+                    light_pow: source.get_pow().into(),
+                    light_pos: source.get_pos().into(),
+                    light_col: source.get_col().into(),
                 })
             ).unwrap();
 

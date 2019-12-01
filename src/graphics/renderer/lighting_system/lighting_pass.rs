@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use crate::graphics::renderer::lighting_system::light_draw_systems::{
     shadow_cone_light::ShadedConeLight,
     ambient_light::AmbientLight,
+    point_light::PointLight,
 };
 
 use crate::graphics::renderer::lighting_system::shadow_mapper::ShadowMapping;
@@ -36,8 +37,14 @@ pub struct LightingPass {
     shadow_mapper: ShadowMapping,
 
     // Pass for one kind of light source
+    // Flat lights
     ambient_light: AmbientLight,
+    point_light: PointLight,
+
+    // Lights with shadows
     shadow_cone_light: ShadedConeLight,
+
+
     // camera view_projection
     view_projection: Matrix4<f32>,
 }
@@ -67,6 +74,10 @@ impl LightingPass {
             queue.clone(),
             Subpass::clone(&subpass)
         );
+        let point_light = PointLight::new(
+            queue.clone(),
+            Subpass::clone(&subpass)
+        );
 
         Self {
             queue,
@@ -76,6 +87,7 @@ impl LightingPass {
             shadow_mapper,
 
             ambient_light,
+            point_light,
             shadow_cone_light,
 
             view_projection: Matrix4::identity(),
@@ -92,8 +104,10 @@ impl LightingPass {
         if !self.view_projection.eq(&vp) {
             self.view_projection = vp;
             let to_world = Matrix4::invert(&vp).unwrap();
-            self.shadow_cone_light.to_world = to_world;
+
             self.ambient_light.to_world = to_world;
+            self.point_light.to_world = to_world;
+            self.shadow_cone_light.to_world = to_world;
         }
     }
 
@@ -103,12 +117,20 @@ impl LightingPass {
                            depth_buffer: Arc<AttachmentImage>,
     )
     {
-        self.shadow_cone_light.set_attachments(
+
+        self.ambient_light.set_attachments(
             diffuse_buffer.clone(),
             normal_buffer.clone(),
             depth_buffer.clone(),
         );
-        self.ambient_light.set_attachments(
+
+        self.point_light.set_attachments(
+            diffuse_buffer.clone(),
+            normal_buffer.clone(),
+            depth_buffer.clone(),
+        );
+
+        self.shadow_cone_light.set_attachments(
             diffuse_buffer.clone(),
             normal_buffer.clone(),
             depth_buffer.clone(),
@@ -141,10 +163,21 @@ impl LightingPass {
             if source.active {
                 match &mut source.kind {
                     LightKind::Ambient => unsafe {
-                        cbb = cbb.execute_commands(self.ambient_light.render(source, self.vbo.clone(), dyn_state)).unwrap();
+                        cbb = cbb.execute_commands(self.ambient_light.render(
+                            source, self.vbo.clone(), dyn_state
+                        )).unwrap();
                     },
+                    LightKind::PointLight => unsafe {
+                        cbb = cbb.execute_commands(self.point_light.render(
+                            source, self.vbo.clone(), dyn_state
+                        )).unwrap();
+                    },
+
+                    // Shaded
                     LightKind::ConeWithShadow(cone) => unsafe {
-                        cbb = cbb.execute_commands(self.shadow_cone_light.render(cone, self.vbo.clone(), dyn_state)).unwrap();
+                        cbb = cbb.execute_commands(self.shadow_cone_light.render(
+                            cone, self.vbo.clone(), dyn_state
+                        )).unwrap();
                     },
                 }
             }

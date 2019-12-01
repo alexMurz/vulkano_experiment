@@ -23,6 +23,9 @@ pub enum LightKind {
     // Ambient light
     Ambient,
 
+    // Point light without shadows
+    PointLight,
+
     // Cone shadow with light
     ConeWithShadow(ShadowKind::Cone)
 }
@@ -58,6 +61,7 @@ pub mod ShadowKind {
         // Just retranslation from LightSource
         pub pow: f32,
         pub pos: [f32; 3],
+        pub col: [f32; 3],
 
         // Mapper Data
         pub resolution: [u32; 2], // Shadow resolution, managed by shadow mapper
@@ -76,6 +80,7 @@ pub mod ShadowKind {
             resolution: [256, 256],
             pow: 20.0,
             pos: [0.0, 0.0, 0.0],
+            col: [1.0, 1.0, 1.0],
             image: None,
             framebuffer: None,
             data_changed: true,
@@ -95,8 +100,9 @@ pub mod ShadowKind {
             self.proj = cgmath::perspective(cgmath::Deg(deg), 1.0, 1.0,  distance.max(1.1));
             self.data_changed = true;
         }
-        pub fn update(&mut self, pos: &[f32; 3], dir: &[f32; 3], pow: f32) {
+        pub fn update(&mut self, pos: &[f32; 3], dir: &[f32; 3], col: &[f32; 3], pow: f32) {
             self.pos = *pos;
+            self.col = *col;
             self.pow = pow;
             self.set_projection(self.proj_deg, pow);
             self.vp = self.proj *
@@ -134,6 +140,7 @@ impl LightSource {
         }
     }
 
+    pub fn get_pos(&self) -> [f32; 3] { self.pos }
     pub fn pos(&mut self, x: f32, y: f32, z: f32) {
         self.pos = [x, y, z];
         self.dirty = true;
@@ -143,6 +150,7 @@ impl LightSource {
         self.dirty = true;
     }
 
+    pub fn get_dir(&self) -> [f32; 3] { self.dir }
     pub fn dir(&mut self, x: f32, y: f32, z: f32) {
         self.dir = [x, y, z];
         self.dirty = true;
@@ -158,6 +166,7 @@ impl LightSource {
         self.dir(-v.x, -v.y, -v.z)
     }
 
+    pub fn get_col(&self) -> [f32; 3] { self.col }
     pub fn col(&mut self, r: f32, g: f32, b: f32) {
         self.col = [r, g, b];
     }
@@ -175,7 +184,7 @@ impl LightSource {
     pub fn update(&mut self) {
         if self.dirty {
             match &mut self.kind {
-                LightKind::ConeWithShadow(cone) => cone.update(&self.pos, &self.dir, self.pow),
+                LightKind::ConeWithShadow(cone) => cone.update(&self.pos, &self.dir, &self.col, self.pow),
                 _ => ()
             }
             self.dirty = false;

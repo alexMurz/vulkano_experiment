@@ -104,20 +104,30 @@ impl Renderer {
             Subpass::from(render_pass.clone(), 1).unwrap()
         );
 
-        let light_count = 100;
-        let light_res = [64, 64];
+        let light_count = 3;
+        let res_sq = 1024;
+        let light_res = [res_sq, res_sq];
 
-        /* Test ambient */ if true {
-            let source = lighting_pass.create_source(LightKind::Ambient);
+        /* Ambient */ {
+            let mut source = lighting_pass.create_source(LightKind::Ambient);
             source.borrow_mut().active = true;
-            source.borrow_mut().pow(0.05);
+            source.borrow_mut().col(0.1, 0.1, 0.3);
+            source.borrow_mut().pow(0.1);
+        }
+
+        /* Spot Light */{
+            let mut source = lighting_pass.create_source(LightKind::PointLight);
+            source.borrow_mut().active = true;
+            source.borrow_mut().pos(0.0, 0.8, 0.0);
+            source.borrow_mut().col(0.8, 0.2, 0.2);
+            source.borrow_mut().pow(10.0);
         }
 
 
         for i in 0..light_count {
             let x = (i as f32 / light_count as f32 * 3.1415 * 2.0).sin() * 5.0;
             let y = (i as f32 / light_count as f32 * 3.1415 * 2.0).cos() * 5.0;
-            let source = lighting_pass.create_source(LightKind::ConeWithShadow(
+            let mut source = lighting_pass.create_source(LightKind::ConeWithShadow(
                 ShadowKind::Cone::with_projection(45.0, light_res)
             ));
             source.borrow_mut().pos(x, -2.0, y);
