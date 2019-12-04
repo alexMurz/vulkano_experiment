@@ -60,9 +60,9 @@ pub fn load_model_faces<M>(blend: &blend::Blend, model_name: &str, mut face_map:
                 vert_buff[i][1] = -co[2];
                 vert_buff[i][2] = -co[1];
 
-                norm_buff[i][0] = f32::from(-no[0]) / 32767.0;
-                norm_buff[i][1] = f32::from(-no[1]) / 32767.0;
-                norm_buff[i][2] = f32::from(-no[2]) / 32767.0;
+                norm_buff[i][0] = f32::from(no[0]) / 32767.0;
+                norm_buff[i][1] = f32::from(no[2]) / 32767.0;
+                norm_buff[i][2] = f32::from(no[1]) / 32767.0;
 
                 uv_buff[i][0] = uv[0];
                 uv_buff[i][1] = uv[1];

@@ -366,10 +366,8 @@ mod lighting_pass {
     use vulkano::framebuffer::RenderPassAbstract;
     use vulkano::framebuffer::Subpass;
     use vulkano::image::AttachmentImage;
-    use vulkano::image::ImageAccess;
     use vulkano::image::ImageUsage;
     use vulkano::image::ImageViewAccess;
-    use vulkano::sync::GpuFuture;
     use vulkano::buffer::{CpuAccessibleBuffer, BufferUsage};
     use vulkano::pipeline::{ GraphicsPipelineAbstract, GraphicsPipeline };
     use vulkano::pipeline::blend::{AttachmentBlend, BlendOp, BlendFactor};

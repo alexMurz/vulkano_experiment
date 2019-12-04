@@ -1,63 +1,277 @@
+// Point of this class is to process, sort, categorize and send event to listeners and renderer
+// Creates window from config
 
 
-use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, BufferAccess};
-use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
-use vulkano::descriptor::descriptor_set::{PersistentDescriptorSet, FixedSizeDescriptorSet};
-use vulkano::device::{Device, DeviceExtensions, Queue};
-use vulkano::format::Format;
-use vulkano::framebuffer::{Framebuffer, Subpass, RenderPassAbstract};
-use vulkano::image::{SwapchainImage, ImageUsage};
-use vulkano::image::attachment::AttachmentImage;
-use vulkano::instance::Instance;
-use vulkano::instance::PhysicalDevice;
-use vulkano::pipeline::vertex::TwoBuffersDefinition;
-use vulkano::pipeline::viewport::Viewport;
-use vulkano::pipeline::{GraphicsPipeline, GraphicsPipelineAbstract};
-use vulkano::swapchain::{AcquireError, PresentMode, SurfaceTransform, Swapchain, SwapchainCreationError, ColorSpace, Surface};
-use vulkano::swapchain;
-use vulkano::sync::GpuFuture;
-use vulkano::sync;
+use vulkano_win::{ VkSurfaceBuild };
+use vulkano::{
+    instance::{ Instance, QueueFamily, PhysicalDevice, MemoryType, ApplicationInfo },
+    device::{ Queue, QueuesIter, Device, DeviceExtensions },
+    swapchain::{ self, Surface, Swapchain, SurfaceTransform, PresentMode, AcquireError },
+    image::{ SwapchainImage },
+    sync::{ self, GpuFuture, FlushError },
+};
+use winit::{EventsLoop, dpi::{LogicalPosition, LogicalSize}, VirtualKeyCode, ElementState, Window};
 
-use vulkano_win::{VkSurfaceBuild, create_vk_surface};
-
-use winit::{Window, ElementState, VirtualKeyCode, MouseCursor };
-use winit::dpi::LogicalPosition;
-
-use cgmath::{Matrix3, Matrix4, Point3, Vector3, Rad, SquareMatrix, vec3};
-
-use std::iter;
 use std::sync::Arc;
-use std::time::Instant;
-use vulkano::descriptor::DescriptorSet;
+use std::cell::RefCell;
 
-mod graphics;
-use graphics::{ renderer };
-use crate::graphics::Camera;
-use crate::graphics::old_renderer::RendererState;
+use crate::loader;
+use crate::graphics::{
+    renderer,
+    Camera,
+    object::{ Vertex3D, ObjectInstance }
+};
 
-extern crate blend;
+pub mod settings;
+use settings::{
+    GameSettings,
+    BackendInfo
+};
+use vulkano::swapchain::SwapchainAcquireFuture;
+use vulkano::device::DeviceOwned;
 
-mod game_entry;
-mod loader;
-mod main_processor;
 
-fn main() {
-    use main_processor::{
-        MainProcessor,
-        settings::{ GameSettings, WindowMode }
-    };
+/// Main Processor listener
+pub trait GameListener {
+    fn update(&mut self, delta: f32);
 
-    let settings = GameSettings {
-//        window_mode: WindowMode::Borderless,
-        .. GameSettings::default()
-    };
+    fn key_pressed(&mut self, keycode: VirtualKeyCode) { }
+    fn key_released(&mut self, keycode: VirtualKeyCode) { }
+}
 
-    if let Some(mut processor) = MainProcessor::new(settings) {
-        processor.start_loop();
+/// Resource Provider for GameListener
+pub trait ResourceProvider {
+    fn key_state(&self, keycode: VirtualKeyCode) -> bool;
+}
+
+
+/// Main Processor
+/// Sends events and backend attachments to its GameListener
+pub struct MainProcessor {
+    used_settings: GameSettings,
+
+    backend: BackendInfo,
+    swapchain: SwapchainConfig,
+
+    keyboard_state: Arc<RefCell<KeyboardState>>,
+    listener: Option<Box<dyn GameListener>>,
+}
+impl MainProcessor {
+    pub fn new(settings: GameSettings) -> Option<Self> {
+        let backend = settings.generate_backend()?;
+        let swapchain = SwapchainConfig::create(&backend)?;
+        Some(Self {
+            used_settings: settings,
+
+            backend,
+            swapchain,
+
+            keyboard_state: Arc::new(RefCell::new(KeyboardState::new())),
+            listener: None
+        })
     }
 
-//    start();
+    pub fn set_game_listener(&mut self, game_listener: Box<dyn GameListener>) {
+        self.listener = Some(game_listener);
+    }
+
+    pub fn start_loop(&mut self) {
+        let mut renderer = renderer::Renderer::new(self.swapchain.main_queue.clone(), self.swapchain.swapchain.format());
+
+        // Gpu Future
+        let mut last_sync = Box::new(sync::now(self.swapchain.device())) as Box<dyn GpuFuture>;
+
+        // Running flag
+        let mut is_running = true;
+
+        let mut prev_time = time::precise_time_ns();
+        while is_running {
+            let time = time::precise_time_ns();
+            let delta = (time - prev_time) as f32 / 1e9;
+            prev_time = time;
+
+            // Do update
+            if self.listener.is_some() {
+                self.listener.as_mut().unwrap().update(delta);
+            }
+
+            // Do swapchain maintenance
+            self.swapchain.update_if_required(&self.backend);
+
+            // Do acquire swapchain image
+            let (image_num, acquire_future) = match self.swapchain.acquire() {
+                Ok(r) => r,
+                Err(AcquireError::OutOfDate) => {
+                    self.swapchain.recreate();
+                    continue;
+                },
+                Err(err) => panic!("{:?}", err),
+            };
+
+            // Do drawing
+
+            // ...
+
+            let future = renderer.render(
+                last_sync.join(acquire_future),
+                self.swapchain.images[image_num].clone(),
+                &vec![]
+            );
+
+
+            // Update GpuFuture
+            match future.then_swapchain_present(
+                self.swapchain.main_queue.clone(),
+                self.swapchain.swapchain.clone(),
+                image_num
+            ).then_signal_fence_and_flush() {
+                Ok(future) => {
+                    // This wait is required when using NVIDIA or running on macOS. See https://github.com/vulkano-rs/vulkano/issues/1247
+                    future.wait(None).unwrap();
+                    last_sync = Box::new(future) as Box<_>;
+                }
+                Err(FlushError::OutOfDate) => {
+                    self.swapchain.recreate();
+                    last_sync = Box::new(sync::now(self.swapchain.device().clone())) as Box<_>;
+                }
+                Err(e) => {
+                    println!("{:?}", e);
+                    return;
+                }
+            }
+
+            // Process Events
+            let mut kb = &mut self.keyboard_state;
+            let mut sc = &mut self.swapchain;
+            self.backend.event_loop.poll_events(|e| {
+                use winit::Event;
+                match e {
+                    Event::WindowEvent { event, ..} => {
+                        use winit::WindowEvent;
+                        match event {
+                            WindowEvent::Resized(_) => sc.recreate(),
+                            WindowEvent::CloseRequested => is_running = false,
+                            WindowEvent::KeyboardInput { input: winit::KeyboardInput{ virtual_keycode: Some(keycode), state, .. }, .. } => {
+                                use winit::VirtualKeyCode::*;
+                                kb.borrow_mut().key_event(keycode, state);
+                                match keycode {
+                                    Escape => is_running = false,
+                                    _ => (),
+                                }
+                            }
+                            _ => (),
+                        }
+
+
+                    },
+                    _ => (),
+                }
+            });
+        }
+    }
 }
+
+/// Contain all associated information about swapchain
+pub struct SwapchainConfig {
+    swapchain: Arc<Swapchain<Window>>,
+    images: Vec<Arc<SwapchainImage<Window>>>,
+
+    main_queue: Arc<Queue>,
+    queues: QueuesIter,
+
+    recreate: bool
+}
+impl SwapchainConfig {
+
+    pub fn create(backend: &BackendInfo) -> Option<Self> {
+        let window = backend.window();
+
+        // Dims
+        let mut dimensions = if let Some(dimensions) = window.get_inner_size() {
+            let dimensions: (u32, u32) = dimensions.to_physical(window.get_hidpi_factor()).into();
+            [dimensions.0, dimensions.1]
+        } else {
+            return None;
+        };
+
+//        println!("Window with dimensions {:?}", dimensions);
+
+        // Select physical device
+        let physical = {
+            let dev = PhysicalDevice::enumerate(&backend.instance).next().unwrap();
+//            println!("Using device: {} (type: {:?})", dev.name(), dev.ty());
+            dev
+        };
+
+        let queue_family = physical.queue_families().find(|&q|
+            q.supports_graphics() && backend.surface.is_supported(q).unwrap_or(false)
+        ).unwrap();
+
+        let device_ext = DeviceExtensions { khr_swapchain: true, .. DeviceExtensions::none() };
+
+        let (device, mut queues) = Device::new(
+            physical, physical.supported_features(), &device_ext,
+            [(queue_family, 0.5)].iter().cloned()
+        ).unwrap();
+
+        let main_queue = queues.next().unwrap();
+
+        let (mut swapchain, mut images) = {
+            let caps = backend.surface.capabilities(physical).unwrap();
+//            println!("Device Caps: {:?}", caps);
+
+            let usage = caps.supported_usage_flags;
+            let format = caps.supported_formats[0].0;
+            let alpha = caps.supported_composite_alpha.iter().next().unwrap();
+
+//            println!("Formats: {:?}", caps.present_modes);
+
+            let image_count = caps.min_image_count;
+            Swapchain::new(device.clone(), backend.surface.clone(),
+                           image_count, format, dimensions, 1,
+                           usage, &main_queue, SurfaceTransform::Identity,
+                           alpha, PresentMode::Immediate,
+                           true, None).unwrap()
+        };
+
+        Some(Self {
+            swapchain,
+            images,
+
+            main_queue,
+            queues,
+
+            recreate: false })
+    }
+
+    pub fn device(&self) -> Arc<Device> {
+        self.swapchain.device().clone()
+    }
+
+    pub fn recreate(&mut self) { self.recreate = true; }
+
+    pub fn update_if_required(&mut self, backend: &BackendInfo) {
+        if self.recreate {
+            let window = backend.window();
+            let dimensions = if let Some(dimensions) = window.get_inner_size() {
+                let dimensions: (u32, u32) = dimensions.to_physical(window.get_hidpi_factor()).into();
+                [dimensions.0, dimensions.1]
+            } else {
+                return;
+            };
+            let (new_swapchain, new_images) = self.swapchain.recreate_with_dimension(dimensions).unwrap();
+            self.swapchain = new_swapchain;
+            self.images = new_images;
+            self.recreate = false;
+        }
+    }
+
+    pub fn acquire(&self) -> Result<(usize, SwapchainAcquireFuture<Window>), AcquireError> {
+        swapchain::acquire_next_image(self.swapchain.clone(), None)
+    }
+
+}
+
 pub fn start() {
     let mut event_loop = winit::EventsLoop::new();
 
@@ -79,7 +293,7 @@ pub fn start() {
     let default_aspect = (default_width / default_height) as f32;
 
     let surface = {
-        let mut wb = winit::WindowBuilder::new()
+        let wb = winit::WindowBuilder::new()
             .with_title("Title")
             .with_dimensions((default_width, default_height).into())
             .with_min_dimensions((640.0, 480.0).into())
@@ -140,7 +354,7 @@ pub fn start() {
     };
 
     let (mut floor_object, mut test_object) = {
-        use graphics::object::{ Vertex3D, ObjectInstance };
+//        use graphics::object::{ Vertex3D, ObjectInstance };
 
         let floor_size = 150.0;
         let floor_mesh = renderer.generate_mesh_from_data(vec![
@@ -281,7 +495,7 @@ pub fn start() {
                 future.wait(None).unwrap();
                 prev_sync = Box::new(future) as Box<_>;
             }
-            Err(sync::FlushError::OutOfDate) => {
+            Err(FlushError::OutOfDate) => {
                 recreate_swapchain = true;
                 prev_sync = Box::new(sync::now(device.clone())) as Box<_>;
             }
@@ -308,6 +522,7 @@ pub fn start() {
 
                         winit::WindowEvent::KeyboardInput { input: winit::KeyboardInput { virtual_keycode: Some(key), state, .. }, .. } => {
                             use winit::VirtualKeyCode::*;
+                            use winit::ElementState;
                             match key {
                                 Q => button_states[Button::Q] = state == ElementState::Pressed,
                                 W => button_states[Button::W] = state == ElementState::Pressed,
@@ -349,62 +564,62 @@ pub fn start() {
 
 }
 
-mod test {
+/// Remap keys for ease of use with my way of using them
 
-    #[test] fn test_arc() {
-        use std::sync::Arc;
+pub struct KeyboardState {
+    keys: [bool; 255],
+}
+impl KeyboardState {
 
-        let arc1 = Arc::new(5.0);
-        let arc2 = arc1.clone();
-        assert_eq!(arc1, arc2)
-    }
+    pub fn new() -> Self { Self {
+        keys: [false; 255]
+    } }
 
-    #[test] fn test_arc_vec() {
-        use std::sync::Arc;
-
-        let a = Arc::new(1.0);
-        let b = Arc::new(2.0);
-        let c = Arc::new(3.0);
-
-        let mut vec = vec![a.clone(), b.clone(), c.clone()];
-        vec.retain(|x| *x != b);
-        assert_eq!(vec, vec![a, c]);
-    }
-
-    #[test] fn test_address_cmp() {
-        use std::sync::Arc;
-        use std::cell::RefCell;
-
-        #[derive(Debug)]
-        struct Data {}
-        // Compare by address
-        impl PartialEq for Data {
-            fn eq(&self, other: &Data) -> bool { self as *const _ == other as *const _ }
+    /// Set from ElementState
+    pub fn key_event(&mut self, keycode: VirtualKeyCode, state: ElementState) {
+        if state == ElementState::Pressed {
+            self.key_down(keycode);
+        } else {
+            self.key_up(keycode);
         }
-
-        let a = Arc::new(RefCell::new(Data{}));
-        let b = a.clone();
-        let c = Arc::new(RefCell::new(Data{}));
-
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-        assert_ne!(b, c);
     }
+
+    /// Then Key Pressed
+    pub fn key_down(&mut self, keycode: VirtualKeyCode) {
+        self.keys[keycode as usize] = true;
+    }
+
+    /// Then Key Released
+    pub fn key_up(&mut self, keycode: VirtualKeyCode) {
+        self.keys[keycode as usize] = false;
+    }
+
+    pub fn state_of(&self, keycode: VirtualKeyCode) -> bool { self.keys[keycode as usize] }
+
 }
 
+mod test {
+    use winit::{VirtualKeyCode, ElementState};
+    use crate::main_processor::KeyboardState;
 
+    #[test] fn test_keyboard_state() {
+        let mut state = KeyboardState::new();
 
+        state.key_event(VirtualKeyCode::Q, ElementState::Pressed);
+        assert_eq!(state.state_of(VirtualKeyCode::Q), true);
+        assert_eq!(state.state_of(VirtualKeyCode::W), false);
 
+        state.key_event(VirtualKeyCode::W, ElementState::Pressed);
+        assert_eq!(state.state_of(VirtualKeyCode::Q), true);
+        assert_eq!(state.state_of(VirtualKeyCode::W), true);
 
+        state.key_event(VirtualKeyCode::Q, ElementState::Released);
+        assert_eq!(state.state_of(VirtualKeyCode::Q), false);
+        assert_eq!(state.state_of(VirtualKeyCode::W), true);
 
+        state.key_event(VirtualKeyCode::W, ElementState::Released);
+        assert_eq!(state.state_of(VirtualKeyCode::Q), false);
+        assert_eq!(state.state_of(VirtualKeyCode::W), false);
+    }
 
-
-
-
-
-
-
-
-
-
-
+}

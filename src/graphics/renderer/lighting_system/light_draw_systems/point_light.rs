@@ -5,7 +5,6 @@ use vulkano::framebuffer::{Subpass, RenderPassAbstract};
 use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
 use vulkano::buffer::{BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer};
 use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess, ScreenVertex};
-use vulkano::sync::GpuFuture;
 use vulkano::pipeline::blend::{AttachmentBlend, BlendOp, BlendFactor};
 use vulkano::descriptor::DescriptorSet;
 use cgmath::{ Matrix4, SquareMatrix };

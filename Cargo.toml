@@ -6,7 +6,8 @@ edition = "2018"
 publish = false
 
 [dependencies]
-cgmath = "0.17"
+cgmath = "0.16.1"
+cgmath-culling = "0.2.0"
 png = "0.15.0"
 time = "0.1.38"
 blend = "0.6.1"

@@ -6,17 +6,18 @@ use crate::graphics::renderer::geometry_pass::GeometryPass;
 use vulkano::image::{AttachmentImage, ImageUsage, ImageAccess, ImageViewAccess};
 use cgmath::{Matrix4, Point3, vec3};
 use vulkano::sync::GpuFuture;
-use crate::graphics::object::{ObjectInstance, Vertex3D, MeshData};
+use crate::graphics::object::{ObjectInstance, Vertex3D, MeshData, MeshCulling};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState, CommandBuffer};
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::buffer::{BufferUsage, ImmutableBuffer};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 
-mod geometry_pass;
-mod lighting_system;
-
 use lighting_system::lighting_pass::LightingPass;
 use lighting_system::{ LightSource, LightKind, ShadowKind };
+use std::cell::RefCell;
+
+mod geometry_pass;
+mod lighting_system;
 
 pub struct Renderer {
     // Basics
@@ -33,6 +34,35 @@ pub struct Renderer {
     geom_pass: GeometryPass,
     lighting_pass: LightingPass,
 }
+/// Comms with game_listener
+impl Renderer {
+
+    pub fn generate_mesh_from_data(&self, data: Vec<Vertex3D>) -> MeshData {
+        let (vbo, future) = ImmutableBuffer::from_iter(
+            data.iter().cloned(),
+            BufferUsage::vertex_buffer(),
+            self.queue.clone(),
+        ).unwrap();
+
+        // Wait on future
+        future.flush().unwrap();
+
+        MeshData {
+            vbo,
+            ibo: None,
+            aabb: MeshCulling::from_vec(&data)
+        }
+    }
+
+    pub fn create_light_source(&mut self, kind: LightKind) -> Arc<RefCell<LightSource>> {
+        self.lighting_pass.create_source(kind)
+    }
+    pub fn remove_light_source(&mut self, source: Arc<RefCell<LightSource>>) -> bool {
+        self.lighting_pass.remove_source(source)
+    }
+
+}
+/// Comms with main loop
 impl Renderer {
     pub fn new(queue: Arc<Queue>, output_format: Format) -> Self {
         let render_pass = Arc::new(vulkano::ordered_passes_renderpass!(queue.device().clone(),
@@ -104,7 +134,7 @@ impl Renderer {
             Subpass::from(render_pass.clone(), 1).unwrap()
         );
 
-        let light_count = 3;
+        let light_count = 4;
         let res_sq = 1024;
         let light_res = [res_sq, res_sq];
 
@@ -118,7 +148,7 @@ impl Renderer {
         /* Spot Light */{
             let mut source = lighting_pass.create_source(LightKind::PointLight);
             source.borrow_mut().active = true;
-            source.borrow_mut().pos(0.0, 0.8, 0.0);
+            source.borrow_mut().pos(0.0, -1.0, 3.0);
             source.borrow_mut().col(0.8, 0.2, 0.2);
             source.borrow_mut().pow(10.0);
         }
@@ -132,20 +162,9 @@ impl Renderer {
             ));
             source.borrow_mut().pos(x, -2.0, y);
             source.borrow_mut().look_at(0.0, 0.0, 0.0);
+            source.borrow_mut().col(0.4, 0.4, 0.4);
             source.borrow_mut().pow(10.0);
         }
-
-//        for i in 0..light_count {
-//            let x = (i as f32 / light_count as f32 * 3.1415 * 2.0).sin() * 5.0;
-//            let y = (i as f32 / light_count as f32 * 3.1415 * 2.0).cos() * 5.0;
-//            let mut ss = shadow_mapping.new_source(light_res);
-//            ss.borrow_mut().light_pos = [x, -5.0, y];
-//            ss.borrow_mut().view_projection = {
-//                cgmath::perspective(cgmath::Deg(45.0), 1.0, 1.0, 20.0)
-//                    * Matrix4::look_at(Point3::new(x,-5.0, y), Point3::new(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0))
-//
-//            };
-//        }
 
         Self {
             queue,
@@ -158,22 +177,6 @@ impl Renderer {
 
             geom_pass,
             lighting_pass
-        }
-    }
-
-    pub fn generate_mesh_from_data(&self, data: Vec<Vertex3D>) -> MeshData {
-        let (vbo, future) = ImmutableBuffer::from_iter(
-            data.iter().cloned(),
-            BufferUsage::vertex_buffer(),
-            self.queue.clone(),
-        ).unwrap();
-
-        // Wait on future
-        future.flush().unwrap();
-
-        MeshData {
-            vbo,
-            ibo: None
         }
     }
 

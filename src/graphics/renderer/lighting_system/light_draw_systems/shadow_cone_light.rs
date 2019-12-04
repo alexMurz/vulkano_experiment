@@ -5,7 +5,6 @@ use vulkano::framebuffer::{Subpass, RenderPassAbstract};
 use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
 use vulkano::buffer::{BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer};
 use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess, ScreenVertex};
-use vulkano::sync::GpuFuture;
 use vulkano::pipeline::blend::{AttachmentBlend, BlendOp, BlendFactor};
 use vulkano::descriptor::DescriptorSet;
 use cgmath::{ Matrix4, SquareMatrix };
@@ -73,9 +72,10 @@ vec2 poissonDisk[4] = vec2[](
   vec2( -0.094184101, -0.92938870 ),
   vec2( 0.34495938, 0.29387760 )
 );
-float spread = 700.0;
 
-//#define SHADOW_POISSON
+float spread = 700.0;
+#define SHADOW_POISSON
+
 float sampleShadow(vec4 shadow_coord, float bias) {
     shadow_coord.xy /= shadow_coord.w;
 // Sence its a cone, clamp circle on `uvs`
@@ -119,13 +119,6 @@ void main() {
 }"
     }
 }
-
-const SHADOW_BIAS: Matrix4<f32> = Matrix4::new(
-    0.5, 0.0, 0.0, 0.0,
-    0.0, 0.5, 0.0, 0.0,
-    0.0, 0.0, 1.0, 0.0,
-    0.5, 0.5, 0.0, 1.0,
-);
 
 pub struct ShadedConeLight {
     queue: Arc<Queue>,
@@ -226,7 +219,12 @@ impl ShadedConeLight {
                 self.queue.device().clone(), BufferUsage::uniform_buffer(),
                 fs::ty::LightData {
                     _dummy0: [0; 4].into(),
-                    shadow_biased: (SHADOW_BIAS * cone.vp).into(),
+                    shadow_biased: (Matrix4::new(
+                        0.5, 0.0, 0.0, 0.0,
+                        0.0, 0.5, 0.0, 0.0,
+                        0.0, 0.0, 1.0, 0.0,
+                        0.5, 0.5, 0.0, 1.0,
+                    ) * cone.vp).into(),
                     light_pos: cone.pos.into(),
                     light_col: cone.col.into(),
                     light_pow: cone.pow.into(),
@@ -237,7 +235,12 @@ impl ShadedConeLight {
         else if cone.data_changed {
             // Update information in buffer then requested
             let mut writer = cone.data_buffer.as_ref().unwrap().write().unwrap();
-            writer.shadow_biased = (SHADOW_BIAS * cone.vp).into();
+            writer.shadow_biased = (Matrix4::new(
+                0.5, 0.0, 0.0, 0.0,
+                0.0, 0.5, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.5, 0.5, 0.0, 1.0,
+            ) * cone.vp).into();
             writer.light_pos = cone.pos.into();
             writer.light_col = cone.col.into();
             writer.light_pow = cone.pow.into();

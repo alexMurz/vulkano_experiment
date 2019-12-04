@@ -9,7 +9,6 @@ use vulkano::device::Queue;
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::format::Format;
 use crate::graphics::renderer::lighting_system::{LightSource, LightKind};
-use vulkano::sync::GpuFuture;
 use cgmath::{Matrix4, Point3, vec3};
 
 mod depth_vs {
@@ -146,15 +145,18 @@ impl ShadowMapping {
                 }]);
 
                 for i in geometry.iter() {
-                    if i.has_ibo() {
-                        unimplemented!()
-                    } else {
-                        let vs_push = depth_vs::ty::PushData {
-                            mvp: (cone.vp * i.model_matrix()).into()
-                        };
-                        cbb = cbb.draw(self.pipeline.clone(), &self.dyn_state,
-                                       vec![i.get_vbo()],
-                                       (), (vs_push)).unwrap();
+                    let mvp = cone.vp * i.model_matrix();
+                    if i.visible_in(mvp) {
+                        if i.has_ibo() {
+                            unimplemented!()
+                        } else {
+                            let vs_push = depth_vs::ty::PushData {
+                                mvp: mvp.into()
+                            };
+                            cbb = cbb.draw(self.pipeline.clone(), &self.dyn_state,
+                                           vec![i.get_vbo()],
+                                           (), (vs_push)).unwrap();
+                        }
                     }
                 }
 

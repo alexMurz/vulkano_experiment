@@ -17,9 +17,7 @@ mod light_draw_systems;
 pub mod shadow_mapper;
 pub mod lighting_pass;
 
-
 pub enum LightKind {
-
     // Ambient light
     Ambient,
 
@@ -40,18 +38,15 @@ impl LightKind {
 
 #[allow(non_snake_case)]
 pub mod ShadowKind {
-    use cgmath::{Matrix4, Rad, vec3, Point3, SquareMatrix};
-    use vulkano::image::{ImageViewAccess, ImageAccess, AttachmentImage};
+    use cgmath::{Matrix4, vec3, Point3, SquareMatrix};
+    use vulkano::image::{AttachmentImage};
     use std::sync::Arc;
     use vulkano::framebuffer::FramebufferAbstract;
-    use vulkano::buffer::{BufferAccess, CpuAccessibleBuffer};
+    use vulkano::buffer::{CpuAccessibleBuffer};
     use vulkano::descriptor::DescriptorSet;
-    use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-    use std::any::Any;
 
     // Data type for data_buffer
     use crate::graphics::renderer::lighting_system::light_draw_systems::shadow_cone_light;
-    use std::ops::Deref;
 
     pub struct Cone {
         proj_deg: f32,
@@ -126,6 +121,10 @@ pub struct LightSource {
     dir: [f32; 3],
     col: [f32; 3],
     pow: f32
+}
+/// Compare LightSources by address
+impl PartialEq for LightSource {
+    fn eq(&self, other: &LightSource) -> bool { self as *const _ == other as *const _ }
 }
 impl LightSource {
     pub fn new(kind: LightKind) -> Self {

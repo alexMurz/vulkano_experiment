@@ -3,7 +3,7 @@ pub mod old_renderer;
 pub mod object;
 pub mod renderer;
 
-use cgmath::{Matrix4, SquareMatrix, Vector3, Deg, Vector4, Matrix3};
+use cgmath::{Matrix4, SquareMatrix, Vector3, Deg};
 
 pub struct Camera {
     pub pos: [f32; 3],

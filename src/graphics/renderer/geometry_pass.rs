@@ -5,7 +5,6 @@ use vulkano::framebuffer::{Subpass, RenderPassAbstract};
 use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
 use vulkano::buffer::{BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer};
 use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess};
-use vulkano::sync::GpuFuture;
 use vulkano::pipeline::blend::{AttachmentBlend, BlendOp, BlendFactor};
 use vulkano::descriptor::DescriptorSet;
 use cgmath::{ Matrix4, SquareMatrix };
@@ -36,6 +35,7 @@ layout(location = 3) out uint v_flat_shading;
 
 layout(push_constant) uniform PushData {
     mat4 model;
+    mat4 normal;
 } push;
 
 layout(set = 0, binding = 0) uniform Matrixes {
@@ -43,7 +43,10 @@ layout(set = 0, binding = 0) uniform Matrixes {
 } mat;
 
 void main() {
-    v_norm = normal;
+    mat4 normalMatrix = transpose(inverse(push.model));
+//    v_norm = mat3(normalMatrix) * normal;
+    v_norm = mat3(push.normal) * normal;
+
     v_color = color.rgb;
     v_flat_shading = flat_shading;
 
@@ -177,14 +180,19 @@ impl GeometryPass {
         ).unwrap();
 
         for i in geometry {
-            if i.has_ibo() { unimplemented!() } else {
-                let push = vs::ty::PushData {
-                    model: i.model_matrix().into()
-                };
-                cbb = cbb.draw(self.pipeline.clone(), dyn_state,
-                               vec![i.get_vbo()],
-                               (self.uniform_set.clone()), (push))
-                    .unwrap();
+            if i.visible_in(self.view_projection * i.model_matrix()) {
+                if i.has_ibo() {
+                    unimplemented!()
+                } else {
+                    let push = vs::ty::PushData {
+                        model: i.model_matrix().into(),
+                        normal: i.normal_matrix().into(),
+                    };
+                    cbb = cbb.draw(self.pipeline.clone(), dyn_state,
+                                   vec![i.get_vbo()],
+                                   (self.uniform_set.clone()), (push))
+                        .unwrap();
+                }
             }
         }
 

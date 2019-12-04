@@ -4,14 +4,11 @@ use vulkano::device::Queue;
 use vulkano::framebuffer::{Subpass, RenderPassAbstract};
 use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
 use vulkano::buffer::{BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer};
-use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess, ScreenVertex};
+use crate::graphics::object::{ObjectInstance, ScreenVertex};
 use vulkano::sync::GpuFuture;
-use vulkano::pipeline::blend::{AttachmentBlend, BlendOp, BlendFactor};
-use vulkano::descriptor::DescriptorSet;
 use cgmath::{ Matrix4, SquareMatrix };
-use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState};
-use vulkano::image::{AttachmentImage, ImageAccess, ImageViewAccess};
+use vulkano::image::{AttachmentImage};
 use std::cell::RefCell;
 
 use crate::graphics::renderer::lighting_system::light_draw_systems::{
@@ -94,10 +91,23 @@ impl LightingPass {
         }
     }
 
+    /// Create and enable new light source
     pub fn create_source(&mut self, kind: LightKind) -> Arc<RefCell<LightSource>>{
         let source = Arc::new(RefCell::new(LightSource::new(kind)));
         self.sources.push(source.clone());
         source
+    }
+
+    /// Remove source
+    /// Return true if source found and removed or else false
+    pub fn remove_source(&mut self, arc: Arc<RefCell<LightSource>>) -> bool {
+        for i in 0 .. self.sources.len() {
+            if self.sources[i] == arc {
+                self.sources.remove(i);
+                return true;
+            }
+        }
+        false
     }
 
     pub fn set_view_projection(&mut self, vp: Matrix4<f32>) {
