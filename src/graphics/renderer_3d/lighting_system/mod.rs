@@ -1,17 +1,26 @@
 
 use std::sync::Arc;
-use vulkano::device::Queue;
-use vulkano::framebuffer::{Subpass, RenderPassAbstract};
-use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
-use vulkano::buffer::{BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer};
-use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess, ScreenVertex};
-use vulkano::sync::GpuFuture;
-use vulkano::pipeline::blend::{AttachmentBlend, BlendOp, BlendFactor};
-use vulkano::descriptor::DescriptorSet;
+use vulkano::{
+    device::Queue,
+    framebuffer::{ Subpass, RenderPassAbstract },
+    image::{ AttachmentImage, ImageAccess, ImageViewAccess },
+    command_buffer::{ AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState },
+    pipeline::{
+        GraphicsPipelineAbstract, GraphicsPipeline,
+        blend::{ AttachmentBlend, BlendOp, BlendFactor },
+    },
+    descriptor::{
+        DescriptorSet,
+        descriptor_set::PersistentDescriptorSet
+    },
+    buffer::{ BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer },
+
+    sync::GpuFuture,
+};
+
+use crate::graphics::object::{ ScreenVertex };
 use cgmath::{Matrix4, SquareMatrix, vec3, Vector3, InnerSpace};
-use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState};
-use vulkano::image::{AttachmentImage, ImageAccess, ImageViewAccess};
+use std::cell::RefCell;
 
 mod light_draw_systems;
 pub mod shadow_mapper;
@@ -46,7 +55,7 @@ pub mod ShadowKind {
     use vulkano::descriptor::DescriptorSet;
 
     // Data type for data_buffer
-    use crate::graphics::renderer::lighting_system::light_draw_systems::shadow_cone_light;
+    use crate::graphics::renderer_3d::lighting_system::light_draw_systems::shadow_cone_light;
 
     pub struct Cone {
         proj_deg: f32,
@@ -54,7 +63,7 @@ pub mod ShadowKind {
         pub vp: Matrix4<f32>,
 
         // Just retranslation from LightSource
-        pub pow: f32,
+        pub dist: f32,
         pub pos: [f32; 3],
         pub col: [f32; 3],
 
@@ -73,7 +82,7 @@ pub mod ShadowKind {
             proj: Matrix4::identity(),
             vp: Matrix4::identity(),
             resolution: [256, 256],
-            pow: 20.0,
+            dist: 20.0,
             pos: [0.0, 0.0, 0.0],
             col: [1.0, 1.0, 1.0],
             image: None,
@@ -95,11 +104,11 @@ pub mod ShadowKind {
             self.proj = cgmath::perspective(cgmath::Deg(deg), 1.0, 1.0,  distance.max(1.1));
             self.data_changed = true;
         }
-        pub fn update(&mut self, pos: &[f32; 3], dir: &[f32; 3], col: &[f32; 3], pow: f32) {
+        pub fn update(&mut self, pos: &[f32; 3], dir: &[f32; 3], col: &[f32; 3], dist: f32) {
             self.pos = *pos;
             self.col = *col;
-            self.pow = pow;
-            self.set_projection(self.proj_deg, pow);
+            self.dist = dist;
+            self.set_projection(self.proj_deg, dist);
             self.vp = self.proj *
                 Matrix4::look_at(
                 Point3::new(pos[0], pos[1], pos[2]),
@@ -120,7 +129,7 @@ pub struct LightSource {
     pos: [f32; 3],
     dir: [f32; 3],
     col: [f32; 3],
-    pow: f32
+    dist: f32
 }
 /// Compare LightSources by address
 impl PartialEq for LightSource {
@@ -135,7 +144,7 @@ impl LightSource {
             pos: [0.0, 0.0, 0.0],
             dir: [0.0, 1.0, 0.0],
             col: [1.0, 1.0, 1.0],
-            pow: 1.0
+            dist: 1.0
         }
     }
 
@@ -169,13 +178,19 @@ impl LightSource {
     pub fn col(&mut self, r: f32, g: f32, b: f32) {
         self.col = [r, g, b];
     }
-    pub fn col_vec(&mut self, v: [f32; 3]) {
-        self.col = v;
+    pub fn col_vec(&mut self, v: [f32; 3]) { self.col = v; }
+
+    /// Modify light intensity [0.0 .. 1.0]
+    pub fn int(&mut self, int: f32) {
+        let m = int / self.col[0].max(self.col[1].max(self.col[2]));
+        self.col[0] *= m;
+        self.col[1] *= m;
+        self.col[2] *= m;
     }
 
-    pub fn get_pow(&self) -> f32 { self.pow }
-    pub fn pow(&mut self, pow: f32) {
-        self.pow = pow;
+    pub fn get_dist(&self) -> f32 { self.dist }
+    pub fn dist(&mut self, dist: f32) {
+        self.dist = dist;
         self.dirty = true;
     }
 
@@ -183,14 +198,13 @@ impl LightSource {
     pub fn update(&mut self) {
         if self.dirty {
             match &mut self.kind {
-                LightKind::ConeWithShadow(cone) => cone.update(&self.pos, &self.dir, &self.col, self.pow),
+                LightKind::ConeWithShadow(cone) => cone.update(&self.pos, &self.dir, &self.col, self.dist),
                 _ => ()
             }
             self.dirty = false;
         }
     }
 }
-
 
 
 

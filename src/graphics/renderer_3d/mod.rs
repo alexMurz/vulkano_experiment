@@ -2,11 +2,10 @@ use std::sync::Arc;
 use vulkano::device::Queue;
 use vulkano::framebuffer::{RenderPassAbstract, Subpass, Framebuffer};
 use vulkano::format::Format;
-use crate::graphics::renderer::geometry_pass::GeometryPass;
+use crate::graphics::renderer_3d::geometry_pass::GeometryPass;
 use vulkano::image::{AttachmentImage, ImageUsage, ImageAccess, ImageViewAccess};
 use cgmath::{Matrix4, Point3, vec3};
 use vulkano::sync::GpuFuture;
-use crate::graphics::object::{ObjectInstance, Vertex3D, MeshData, MeshCulling};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState, CommandBuffer};
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::buffer::{BufferUsage, ImmutableBuffer};
@@ -17,9 +16,19 @@ use lighting_system::{ LightSource, LightKind, ShadowKind };
 use std::cell::RefCell;
 
 mod geometry_pass;
-mod lighting_system;
+pub mod lighting_system;
+pub mod mesh;
+use mesh::{
+    Vertex3D, MeshAccess,
+    MaterialMeshSlice,
+    MeshData, MeshDataAsync,
+    MaterialData, ObjectInstance,
+};
 
-pub struct Renderer {
+pub struct Renderer3D {
+    // Geometry to draw
+    pub render_geometry: Vec<ObjectInstance>,
+
     // Basics
     queue: Arc<Queue>,
     render_pass: Arc<dyn RenderPassAbstract + Send + Sync>,
@@ -35,23 +44,14 @@ pub struct Renderer {
     lighting_pass: LightingPass,
 }
 /// Comms with game_listener
-impl Renderer {
+impl Renderer3D {
 
-    pub fn generate_mesh_from_data(&self, data: Vec<Vertex3D>) -> MeshData {
-        let (vbo, future) = ImmutableBuffer::from_iter(
-            data.iter().cloned(),
-            BufferUsage::vertex_buffer(),
-            self.queue.clone(),
-        ).unwrap();
+    pub fn generate_mesh_from_data(&self, data: Vec<Vertex3D>) -> Arc<dyn MeshAccess + Send + Sync> {
+        MeshData::from_data(self.queue.clone(), data)
+    }
 
-        // Wait on future
-        future.flush().unwrap();
-
-        MeshData {
-            vbo,
-            ibo: None,
-            aabb: MeshCulling::from_vec(&data)
-        }
+    pub fn generate_mesh_from_data_later(&self, data: Vec<Vertex3D>) -> Arc<dyn MeshAccess + Send + Sync> {
+        MeshDataAsync::from_data(self.queue.clone(), data)
     }
 
     pub fn create_light_source(&mut self, kind: LightKind) -> Arc<RefCell<LightSource>> {
@@ -63,7 +63,7 @@ impl Renderer {
 
 }
 /// Comms with main loop
-impl Renderer {
+impl Renderer3D {
     pub fn new(queue: Arc<Queue>, output_format: Format) -> Self {
         let render_pass = Arc::new(vulkano::ordered_passes_renderpass!(queue.device().clone(),
             attachments: {
@@ -134,39 +134,10 @@ impl Renderer {
             Subpass::from(render_pass.clone(), 1).unwrap()
         );
 
-        let light_count = 4;
-        let res_sq = 1024;
-        let light_res = [res_sq, res_sq];
-
-        /* Ambient */ {
-            let mut source = lighting_pass.create_source(LightKind::Ambient);
-            source.borrow_mut().active = true;
-            source.borrow_mut().col(0.1, 0.1, 0.3);
-            source.borrow_mut().pow(0.1);
-        }
-
-        /* Spot Light */{
-            let mut source = lighting_pass.create_source(LightKind::PointLight);
-            source.borrow_mut().active = true;
-            source.borrow_mut().pos(0.0, -1.0, 3.0);
-            source.borrow_mut().col(0.8, 0.2, 0.2);
-            source.borrow_mut().pow(10.0);
-        }
-
-
-        for i in 0..light_count {
-            let x = (i as f32 / light_count as f32 * 3.1415 * 2.0).sin() * 5.0;
-            let y = (i as f32 / light_count as f32 * 3.1415 * 2.0).cos() * 5.0;
-            let mut source = lighting_pass.create_source(LightKind::ConeWithShadow(
-                ShadowKind::Cone::with_projection(45.0, light_res)
-            ));
-            source.borrow_mut().pos(x, -2.0, y);
-            source.borrow_mut().look_at(0.0, 0.0, 0.0);
-            source.borrow_mut().col(0.4, 0.4, 0.4);
-            source.borrow_mut().pow(10.0);
-        }
 
         Self {
+            render_geometry: Vec::new(),
+
             queue,
             render_pass,
             dyn_state: DynamicState::none(),
@@ -185,11 +156,12 @@ impl Renderer {
         self.lighting_pass.set_view_projection(view_projection);
     }
 
-    pub fn render<'f, F, I>(&mut self, prev_future: F, final_image: I, geometry: &Vec<&'f ObjectInstance>) -> Box<dyn GpuFuture>
+    pub fn render<'f, F, I>(&mut self, prev_future: F, final_image: I) -> Box<dyn GpuFuture>
         where
             F: GpuFuture + 'static,
             I: ImageAccess + ImageViewAccess + Send + Sync + Clone + 'static,
     {
+        for r in self.render_geometry.iter_mut() { r.update(); }
 
         let img_dims = ImageAccess::dimensions(&final_image).width_height();
         if ImageAccess::dimensions(&self.depth_buffer).width_height() != img_dims {
@@ -229,7 +201,7 @@ impl Renderer {
 
         // Prepare shadow map
         // Perform updating of lighting and wait on it
-        let shadow_cb = self.lighting_pass.update(geometry);
+        let shadow_cb = self.lighting_pass.update(&self.render_geometry);
 
         let framebuffer = Arc::new(
             Framebuffer::start(self.render_pass.clone())
@@ -252,7 +224,7 @@ impl Renderer {
 
         // Do geometry pass
         main_cbb = unsafe {
-            main_cbb.execute_commands(self.geom_pass.render(&self.dyn_state, geometry)).unwrap()
+            main_cbb.execute_commands(self.geom_pass.render(&self.dyn_state, &mut self.render_geometry)).unwrap()
         };
 
         // Do Finalization

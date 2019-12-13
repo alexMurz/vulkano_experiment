@@ -4,21 +4,24 @@ use vulkano::device::Queue;
 use vulkano::framebuffer::{Subpass, RenderPassAbstract};
 use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
 use vulkano::buffer::{BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer};
-use crate::graphics::object::{ObjectInstance, ScreenVertex};
+use crate::graphics::object::{ScreenVertex};
 use vulkano::sync::GpuFuture;
 use cgmath::{ Matrix4, SquareMatrix };
 use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState};
 use vulkano::image::{AttachmentImage};
 use std::cell::RefCell;
 
-use crate::graphics::renderer::lighting_system::light_draw_systems::{
-    shadow_cone_light::ShadedConeLight,
-    ambient_light::AmbientLight,
-    point_light::PointLight,
+use crate::graphics::renderer_3d::{
+    mesh::{ Vertex3D, ObjectInstance },
+    lighting_system::light_draw_systems::{
+        shadow_cone_light::ShadedConeLight,
+        ambient_light::AmbientLight,
+        point_light::PointLight,
+    },
 };
 
-use crate::graphics::renderer::lighting_system::shadow_mapper::ShadowMapping;
-use crate::graphics::renderer::lighting_system::{ LightSource, LightKind };
+use crate::graphics::renderer_3d::lighting_system::shadow_mapper::ShadowMapping;
+use crate::graphics::renderer_3d::lighting_system::{LightSource, LightKind };
 
 // Apply diffirent lighting methods
 
@@ -52,10 +55,10 @@ impl LightingPass {
 
         let vbo = {
             let (a, b) = ImmutableBuffer::from_iter(vec![
-                ScreenVertex::new(-1.0, -1.0),
-                ScreenVertex::new(-1.0,  1.0),
-                ScreenVertex::new( 1.0, -1.0),
-                ScreenVertex::new( 1.0,  1.0),
+                ScreenVertex::with_pos(-1.0, -1.0),
+                ScreenVertex::with_pos(-1.0,  1.0),
+                ScreenVertex::with_pos( 1.0, -1.0),
+                ScreenVertex::with_pos( 1.0,  1.0),
             ].iter().cloned(), BufferUsage::vertex_buffer(), queue.clone()).unwrap();
             b.flush().unwrap();
             a
@@ -147,7 +150,7 @@ impl LightingPass {
         );
     }
 
-    pub fn update<'f>(&mut self, geometry: &Vec<&'f ObjectInstance>)  -> AutoCommandBuffer {
+    pub fn update<'f>(&mut self, geometry: &Vec<ObjectInstance>)  -> AutoCommandBuffer {
         let mut cbb = AutoCommandBufferBuilder::primary_one_time_submit(
             self.queue.device().clone(),
             self.queue.family()

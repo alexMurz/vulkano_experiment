@@ -4,7 +4,7 @@ use vulkano::device::Queue;
 use vulkano::framebuffer::{Subpass, RenderPassAbstract};
 use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
 use vulkano::buffer::{BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer};
-use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess, ScreenVertex};
+use crate::graphics::object::{ ScreenVertex };
 use vulkano::pipeline::blend::{AttachmentBlend, BlendOp, BlendFactor};
 use vulkano::descriptor::DescriptorSet;
 use cgmath::{ Matrix4, SquareMatrix };
@@ -14,7 +14,7 @@ use vulkano::image::{AttachmentImage, ImageAccess, ImageViewAccess};
 use vulkano::sampler::{Sampler, Filter, MipmapMode, SamplerAddressMode, BorderColor};
 
 use std::cell::RefCell;
-use crate::graphics::renderer::lighting_system::{
+use crate::graphics::renderer_3d::lighting_system::{
     LightSource, LightKind, ShadowKind
 };
 
@@ -28,12 +28,12 @@ pub mod vs {
         src: "\
 #version 450
 
-layout(location = 0) in vec2 position;
+layout(location = 0) in vec2 pos;
 layout(location = 0) out vec2 v_screen_coords;
 
 void main() {
-    v_screen_coords = position;
-    gl_Position = vec4(position, 0.0, 1.0);
+    v_screen_coords = pos;
+    gl_Position = vec4(pos, 0.0, 1.0);
 }"
     }
 }
@@ -154,7 +154,7 @@ impl AmbientLight {
         ).unwrap()
             .draw(self.pipeline.clone(), dyn_state, vec![vbo.clone()],
                   (attachment_set), (fs::ty::PushData {
-                    pow: source.get_pow().into(),
+                    pow: source.get_dist().into(),
                     _dummy0: [0; 12].into(),
                     col: source.get_col().into(),
                 })

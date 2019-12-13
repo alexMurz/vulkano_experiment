@@ -1,15 +1,18 @@
 use std::sync::Arc;
 use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
 use vulkano::command_buffer::{DynamicState, AutoCommandBufferBuilder, AutoCommandBuffer, CommandBuffer};
-use crate::graphics::object::{Vertex3D, ObjectInstance, MeshAccess};
 use vulkano::framebuffer::{RenderPassAbstract, Subpass, FramebufferAbstract, Framebuffer};
 use std::cell::RefCell;
 use vulkano::image::{AttachmentImage, ImageUsage, ImageAccess};
 use vulkano::device::Queue;
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::format::Format;
-use crate::graphics::renderer::lighting_system::{LightSource, LightKind};
+use crate::graphics::renderer_3d::{
+    mesh::{ Vertex3D, ObjectInstance },
+    lighting_system::{ LightSource, LightKind }
+};
 use cgmath::{Matrix4, Point3, vec3};
+use vulkano::buffer::BufferAccess;
 
 mod depth_vs {
     vulkano_shaders::shader! {
@@ -113,9 +116,9 @@ impl ShadowMapping {
     }
 
 
-    pub fn render_image<'f>(&mut self,
+    pub fn render_image(&mut self,
                         info: &mut LightKind,
-                        geometry: &Vec<&'f ObjectInstance>)
+                        geometry: &Vec<ObjectInstance>)
         -> AutoCommandBuffer
     {
 
@@ -146,15 +149,15 @@ impl ShadowMapping {
 
                 for i in geometry.iter() {
                     let mvp = cone.vp * i.model_matrix();
-                    if i.visible_in(mvp) {
-                        if i.has_ibo() {
+                    if i.mesh_data.visible_in(mvp) {
+                        if i.mesh_data.has_ibo() {
                             unimplemented!()
                         } else {
                             let vs_push = depth_vs::ty::PushData {
                                 mvp: mvp.into()
                             };
                             cbb = cbb.draw(self.pipeline.clone(), &self.dyn_state,
-                                           vec![i.get_vbo()],
+                                           vec![i.mesh_data.get_vbo_slice()],
                                            (), (vs_push)).unwrap();
                         }
                     }

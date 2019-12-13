@@ -5,170 +5,249 @@
 use vulkano_win::{ VkSurfaceBuild };
 use vulkano::{
     instance::{ Instance, QueueFamily, PhysicalDevice, MemoryType, ApplicationInfo },
-    device::{ Queue, QueuesIter, Device, DeviceExtensions },
-    swapchain::{ self, Surface, Swapchain, SurfaceTransform, PresentMode, AcquireError },
+    device::{ Queue, QueuesIter, Device, DeviceExtensions, DeviceOwned },
+    swapchain::{ self, Surface, Swapchain, SurfaceTransform, PresentMode, AcquireError, SwapchainAcquireFuture},
     image::{ SwapchainImage },
     sync::{ self, GpuFuture, FlushError },
 };
-use winit::{EventsLoop, dpi::{LogicalPosition, LogicalSize}, VirtualKeyCode, ElementState, Window};
+use winit::{EventsLoop, dpi::{LogicalPosition, LogicalSize}, VirtualKeyCode, ElementState, Window, MouseButton};
 
 use std::sync::Arc;
-use std::cell::RefCell;
+use std::cell::{RefCell, Ref};
 
 use crate::loader;
 use crate::graphics::{
-    renderer,
+    renderer_3d::{
+        self,
+        mesh::{ Vertex3D, MeshData, ObjectInstance },
+    },
     Camera,
-    object::{ Vertex3D, ObjectInstance }
 };
 
 pub mod settings;
 use settings::{
     GameSettings,
-    BackendInfo
+    WindowInfo
 };
-use vulkano::swapchain::SwapchainAcquireFuture;
-use vulkano::device::DeviceOwned;
+use cgmath::Matrix4;
+use std::error::Error;
+use crate::graphics::image::sampler_pool::SamplerPool;
 
 
 /// Main Processor listener
 pub trait GameListener {
-    fn update(&mut self, delta: f32);
+    fn dimensions_changed(&mut self, frame: &mut Frame, width: u32, height: u32) {}
 
-    fn key_pressed(&mut self, keycode: VirtualKeyCode) { }
-    fn key_released(&mut self, keycode: VirtualKeyCode) { }
+    fn update(&mut self, delta: f32, frame: &mut Frame, future: Box<dyn GpuFuture>) -> Box<dyn GpuFuture>;
+
+    fn key_pressed(&mut self, frame: &mut Frame, keycode: VirtualKeyCode) { }
+    fn key_released(&mut self, frame: &mut Frame, keycode: VirtualKeyCode) { }
+
+    fn mouse_wheel(&mut self, frame: &mut Frame, x: f32, y: f32) { }
 }
 
-/// Resource Provider for GameListener
-pub trait ResourceProvider {
-    fn key_state(&self, keycode: VirtualKeyCode) -> bool;
+/// Requests on to do to some parts of backend from window user
+/// Ex: Window settings, ...
+pub enum FrameRequest {
+    ExitApplication,
+    HoldCursor(Option<bool>), // If none => switch state
 }
 
-
-/// Main Processor
-/// Sends events and backend attachments to its GameListener
-pub struct MainProcessor {
-    used_settings: GameSettings,
-
-    backend: BackendInfo,
-    swapchain: SwapchainConfig,
-
-    keyboard_state: Arc<RefCell<KeyboardState>>,
-    listener: Option<Box<dyn GameListener>>,
+/// Holds state of application
+/// Holds and/or executes requests from FrameRequest
+/// Like is mouse holding and things like that
+#[derive(Debug)]
+struct ApplicationState {
+    running: bool,
+    hold_cursor: bool,
 }
-impl MainProcessor {
-    pub fn new(settings: GameSettings) -> Option<Self> {
-        let backend = settings.generate_backend()?;
-        let swapchain = SwapchainConfig::create(&backend)?;
-        Some(Self {
-            used_settings: settings,
-
-            backend,
-            swapchain,
-
-            keyboard_state: Arc::new(RefCell::new(KeyboardState::new())),
-            listener: None
-        })
-    }
-
-    pub fn set_game_listener(&mut self, game_listener: Box<dyn GameListener>) {
-        self.listener = Some(game_listener);
-    }
-
-    pub fn start_loop(&mut self) {
-        let mut renderer = renderer::Renderer::new(self.swapchain.main_queue.clone(), self.swapchain.swapchain.format());
-
-        // Gpu Future
-        let mut last_sync = Box::new(sync::now(self.swapchain.device())) as Box<dyn GpuFuture>;
-
-        // Running flag
-        let mut is_running = true;
-
-        let mut prev_time = time::precise_time_ns();
-        while is_running {
-            let time = time::precise_time_ns();
-            let delta = (time - prev_time) as f32 / 1e9;
-            prev_time = time;
-
-            // Do update
-            if self.listener.is_some() {
-                self.listener.as_mut().unwrap().update(delta);
+impl Default for ApplicationState {
+    fn default() -> Self { Self {
+        running: true,
+        hold_cursor: false,
+    } }
+}
+impl ApplicationState {
+    fn accept(&mut self, frame: Frame) {
+        for r in frame.requests.iter() {
+            use FrameRequest::*;
+            match r {
+                ExitApplication => self.running = false,
+                HoldCursor(flag) => self.hold_cursor = flag.unwrap_or(!self.hold_cursor),
             }
-
-            // Do swapchain maintenance
-            self.swapchain.update_if_required(&self.backend);
-
-            // Do acquire swapchain image
-            let (image_num, acquire_future) = match self.swapchain.acquire() {
-                Ok(r) => r,
-                Err(AcquireError::OutOfDate) => {
-                    self.swapchain.recreate();
-                    continue;
-                },
-                Err(err) => panic!("{:?}", err),
-            };
-
-            // Do drawing
-
-            // ...
-
-            let future = renderer.render(
-                last_sync.join(acquire_future),
-                self.swapchain.images[image_num].clone(),
-                &vec![]
-            );
-
-
-            // Update GpuFuture
-            match future.then_swapchain_present(
-                self.swapchain.main_queue.clone(),
-                self.swapchain.swapchain.clone(),
-                image_num
-            ).then_signal_fence_and_flush() {
-                Ok(future) => {
-                    // This wait is required when using NVIDIA or running on macOS. See https://github.com/vulkano-rs/vulkano/issues/1247
-                    future.wait(None).unwrap();
-                    last_sync = Box::new(future) as Box<_>;
-                }
-                Err(FlushError::OutOfDate) => {
-                    self.swapchain.recreate();
-                    last_sync = Box::new(sync::now(self.swapchain.device().clone())) as Box<_>;
-                }
-                Err(e) => {
-                    println!("{:?}", e);
-                    return;
-                }
-            }
-
-            // Process Events
-            let mut kb = &mut self.keyboard_state;
-            let mut sc = &mut self.swapchain;
-            self.backend.event_loop.poll_events(|e| {
-                use winit::Event;
-                match e {
-                    Event::WindowEvent { event, ..} => {
-                        use winit::WindowEvent;
-                        match event {
-                            WindowEvent::Resized(_) => sc.recreate(),
-                            WindowEvent::CloseRequested => is_running = false,
-                            WindowEvent::KeyboardInput { input: winit::KeyboardInput{ virtual_keycode: Some(keycode), state, .. }, .. } => {
-                                use winit::VirtualKeyCode::*;
-                                kb.borrow_mut().key_event(keycode, state);
-                                match keycode {
-                                    Escape => is_running = false,
-                                    _ => (),
-                                }
-                            }
-                            _ => (),
-                        }
-
-
-                    },
-                    _ => (),
-                }
-            });
         }
     }
+}
+
+/// Frame info (draw geometry, clicked buttons)
+pub struct Frame<'v> {
+    pub queue: Arc<Queue>, // Main Queue
+    pub image: Arc<SwapchainImage<Window>>, // Output image, None in init frame
+    pub sampler_pool: &'v mut SamplerPool, // Samplet pool
+
+    requests: Vec<FrameRequest>,
+
+    keyboard: &'v mut KeyboardState,
+    mouse: &'v mut MouseState,
+}
+/// Init and interaction with IO
+impl <'v> Frame<'v> {
+    pub fn cursor_pos(&self) -> [f32; 2] { self.mouse.position }
+    pub fn cursor_spd(&self) -> [f32; 2] { self.mouse.speed }
+    pub fn cursor_btn(&self, button: winit::MouseButton) -> bool { self.mouse.state_of(button) }
+
+    pub fn key_state(&self, keycode: VirtualKeyCode) -> bool { self.keyboard.state_of(keycode) }
+}
+/// Frame requests
+impl <'v> Frame<'v> {
+    pub fn request(&mut self, request: FrameRequest) { self.requests.push(request) }
+}
+
+/// Start Listener in one function
+pub fn start_with_settings_and_listener<F>(
+    settings: GameSettings,
+    mut init_listener: F) -> Result<(), String>
+    where F: FnMut(&mut Frame) -> Box<dyn GameListener>
+{
+    let mut application_state = ApplicationState::default();
+    let mut window = settings.generate_window()?;
+    let mut swapchain = SwapchainConfig::create(&window)?;
+    let mut keyboard = KeyboardState::new();
+    let mut mouse = MouseState::new();
+    let mut sampler_pool = SamplerPool::new(swapchain.device());
+
+    macro_rules! new_frame {
+        ($img_idx:expr) => {
+            Frame {
+                queue: swapchain.main_queue.clone(),
+                image: swapchain.images[$img_idx].clone(),
+                sampler_pool: &mut sampler_pool,
+                keyboard: &mut keyboard,
+                mouse: &mut mouse,
+                requests: vec![],
+            }
+        };
+        () => { new_frame!(0) };
+    }
+
+    let mut listener = {
+        let mut init_frame = new_frame!();
+        let mut l = init_listener(&mut init_frame);
+        let dims = swapchain.swapchain.dimensions();
+        l.dimensions_changed(&mut init_frame, dims[0], dims[1]);
+        application_state.accept(init_frame);
+        l
+    };
+
+    let mut last_sync = Box::new(sync::now(swapchain.device())) as Box<dyn GpuFuture>;
+    let mut prev_time = time::precise_time_ns();
+    while application_state.running {
+        let time = time::precise_time_ns();
+        let delta = (time - prev_time) as f32 / 1e9;
+        prev_time = time;
+        println!("FPS: {}", 1.0 / delta);
+
+        // Do swapchain maintenance
+        swapchain.update_if_required(&window);
+
+        // Do acquire swapchain image
+        let (image_num, acquire_future) = match swapchain.acquire() {
+            Ok(r) => r,
+            Err(AcquireError::OutOfDate) => {
+                swapchain.recreate();
+                continue;
+            },
+            Err(e) => return Err(format!("{:?}", e)),
+        };
+
+
+        let mut frame = new_frame!(image_num);
+
+        // Do update and drawing using future to receive next GpuFuture
+        let future = listener.update(delta, &mut frame, Box::new(last_sync.join(acquire_future)));
+
+        // Present future to swapchain
+        match future.then_swapchain_present(
+            swapchain.main_queue.clone(),
+            swapchain.swapchain.clone(),
+            image_num
+        ).then_signal_fence_and_flush() {
+            Ok(future) => {
+                // This wait is required when using NVIDIA or running on macOS. See https://github.com/vulkano-rs/vulkano/issues/1247
+                future.wait(None).unwrap();
+                last_sync = Box::new(future) as Box<_>;
+            }
+            Err(FlushError::OutOfDate) => {
+                swapchain.recreate();
+                last_sync = Box::new(sync::now(swapchain.device().clone())) as Box<_>;
+            }
+            Err(e) => return Err(format!("{:?}", e)),
+        }
+
+        // Process Events
+        window.event_loop.poll_events(|e| {
+            use winit::Event;
+            match e {
+                Event::DeviceEvent { event, .. } => {
+                    use winit::DeviceEvent;
+                    match event {
+                        DeviceEvent::MouseMotion { delta } => { frame.mouse.move_event(delta) },
+                        _ => (),
+                    }
+                },
+                Event::WindowEvent { event, .. } => {
+                    use winit::WindowEvent;
+                    match event {
+                        WindowEvent::Resized(s) => {
+                            listener.dimensions_changed(&mut frame, s.width as u32, s.height as u32);
+                            swapchain.recreate();
+                        },
+                        WindowEvent::CloseRequested => application_state.running = false,
+                        WindowEvent::CursorMoved { position, .. } => frame.mouse.pos_event(position),
+                        WindowEvent::MouseWheel { delta, .. } => {
+                            match delta {
+                                winit::MouseScrollDelta::LineDelta(x, y) => {
+                                    if x != 0.0 || y != 0.0 { listener.mouse_wheel(&mut frame, x, y) }
+                                },
+                                winit::MouseScrollDelta::PixelDelta(p) => {
+                                    panic!("Currently not supported");
+                                },
+                            }
+                        },
+                        WindowEvent::MouseInput { button, state, .. } => frame.mouse.key_event(button, state),
+                        WindowEvent::KeyboardInput { input: winit::KeyboardInput { virtual_keycode: Some(keycode), state, .. }, .. } => {
+                            frame.keyboard.key_event(keycode, state);
+                            match state {
+                                ElementState::Pressed => listener.key_pressed(&mut frame, keycode),
+                                ElementState::Released => listener.key_released(&mut frame, keycode),
+                            }
+                        }
+                        _ => (),
+                    }
+                },
+                _ => (),
+            }
+        });
+
+        // Also move frame to release mouse and keyboard fields for modding
+        application_state.accept(frame);
+
+        // Update mouse position after events but before setting forced, centred position
+        mouse.update(delta);
+
+        // Apply application state
+        {
+            let window = window.window();
+            window.hide_cursor(application_state.hold_cursor);
+            if application_state.hold_cursor {
+                let size = window.get_outer_size().unwrap();
+                let pos = LogicalPosition::new(size.width/2.0, size.height/2.0);
+                window.set_cursor_position(pos).unwrap();
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Contain all associated information about swapchain
@@ -183,20 +262,16 @@ pub struct SwapchainConfig {
 }
 impl SwapchainConfig {
 
-    pub fn create(backend: &BackendInfo) -> Option<Self> {
-        let window = backend.window();
+    pub fn create(backend: &WindowInfo) -> Result<Self, String> {
 
         // Dims
-        let mut dimensions = if let Some(dimensions) = window.get_inner_size() {
-            let dimensions: (u32, u32) = dimensions.to_physical(window.get_hidpi_factor()).into();
+        let mut dimensions = if let Some(dimensions) = backend.window().get_inner_size() {
+            let dimensions: (u32, u32) = dimensions.to_physical(backend.window().get_hidpi_factor()).into();
             [dimensions.0, dimensions.1]
         } else {
-            return None;
+            return Err(String::from("Window already closed (swapchain)"));
         };
 
-//        println!("Window with dimensions {:?}", dimensions);
-
-        // Select physical device
         let physical = {
             let dev = PhysicalDevice::enumerate(&backend.instance).next().unwrap();
 //            println!("Using device: {} (type: {:?})", dev.name(), dev.ty());
@@ -218,30 +293,31 @@ impl SwapchainConfig {
 
         let (mut swapchain, mut images) = {
             let caps = backend.surface.capabilities(physical).unwrap();
-//            println!("Device Caps: {:?}", caps);
 
             let usage = caps.supported_usage_flags;
             let format = caps.supported_formats[0].0;
             let alpha = caps.supported_composite_alpha.iter().next().unwrap();
 
-//            println!("Formats: {:?}", caps.present_modes);
-
             let image_count = caps.min_image_count;
-            Swapchain::new(device.clone(), backend.surface.clone(),
-                           image_count, format, dimensions, 1,
-                           usage, &main_queue, SurfaceTransform::Identity,
-                           alpha, PresentMode::Immediate,
-                           true, None).unwrap()
+            match Swapchain::new(device.clone(), backend.surface.clone(),
+                                 image_count, format, dimensions, 1,
+                                 usage, &main_queue, SurfaceTransform::Identity,
+                                 alpha, PresentMode::Immediate,
+                                 true, None) {
+                Ok(s) => s,
+                Err(e) => return Err(format!("{:?}", e)),
+            }
         };
 
-        Some(Self {
+        Ok(Self {
             swapchain,
             images,
 
             main_queue,
             queues,
 
-            recreate: false })
+            recreate: false
+        })
     }
 
     pub fn device(&self) -> Arc<Device> {
@@ -250,7 +326,7 @@ impl SwapchainConfig {
 
     pub fn recreate(&mut self) { self.recreate = true; }
 
-    pub fn update_if_required(&mut self, backend: &BackendInfo) {
+    pub fn update_if_required(&mut self, backend: &WindowInfo) {
         if self.recreate {
             let window = backend.window();
             let dimensions = if let Some(dimensions) = window.get_inner_size() {
@@ -272,300 +348,7 @@ impl SwapchainConfig {
 
 }
 
-pub fn start() {
-    let mut event_loop = winit::EventsLoop::new();
-
-    // Create instance
-    let instance = {
-        let extensions = vulkano_win::required_extensions();
-        Instance::new(None, &extensions, None).unwrap()
-    };
-
-    // Select physical device
-    let physical = {
-        let dev = PhysicalDevice::enumerate(&instance).next().unwrap();
-        println!("Using device: {} (type: {:?})", dev.name(), dev.ty());
-        dev
-    };
-
-    let default_width = 800.0;
-    let default_height = 600.0;
-    let default_aspect = (default_width / default_height) as f32;
-
-    let surface = {
-        let wb = winit::WindowBuilder::new()
-            .with_title("Title")
-            .with_dimensions((default_width, default_height).into())
-            .with_min_dimensions((640.0, 480.0).into())
-            .with_max_dimensions((1920.0, 1080.0).into())
-            .with_resizable(true);
-        wb.build_vk_surface(&event_loop, instance.clone()).unwrap()
-    };
-    let window = surface.window();
-    let mut mouse_hold_state = false;
-
-    // Dims
-    let mut dimensions = if let Some(dimensions) = window.get_inner_size() {
-        let dimensions: (u32, u32) = dimensions.to_physical(window.get_hidpi_factor()).into();
-        [dimensions.0, dimensions.1]
-    } else {
-        return;
-    };
-
-    let queue_family = physical.queue_families().find(|&q|
-        q.supports_graphics() && surface.is_supported(q).unwrap_or(false)
-    ).unwrap();
-
-    let device_ext = DeviceExtensions { khr_swapchain: true, .. DeviceExtensions::none() };
-
-    let (device, mut queues) = Device::new(
-        physical, physical.supported_features(), &device_ext,
-        [(queue_family, 0.5)].iter().cloned()
-    ).unwrap();
-
-    let main_queue = queues.next().unwrap();
-
-    let (mut swapchain, mut images) = {
-        let caps = surface.capabilities(physical).unwrap();
-        println!("Device Caps: {:?}", caps);
-
-        let usage = caps.supported_usage_flags;
-        let format = caps.supported_formats[0].0;
-        let alpha = caps.supported_composite_alpha.iter().next().unwrap();
-
-        println!("Formats: {:?}", caps.present_modes);
-
-        let image_count = caps.min_image_count;
-
-        Swapchain::new(device.clone(), surface.clone(),
-                       image_count, format, dimensions, 1,
-                       usage, &main_queue, SurfaceTransform::Identity,
-                       alpha, PresentMode::Immediate,
-                       true, None).unwrap()
-    };
-
-//    let mut renderer = renderer::Renderer::new(main_queue.clone(), &mut queues, swapchain.format());
-
-    let mut renderer = renderer::Renderer::new(main_queue.clone(), swapchain.format());
-
-    let mut camera = {
-        let projection = cgmath::perspective(cgmath::Deg(60.0), default_aspect, 0.01, 100.0);
-        Camera::new(projection)
-    };
-
-    let (mut floor_object, mut test_object) = {
-//        use graphics::object::{ Vertex3D, ObjectInstance };
-
-        let floor_size = 150.0;
-        let floor_mesh = renderer.generate_mesh_from_data(vec![
-            Vertex3D::from_position(-floor_size, 0.0,-floor_size).flat_shading(true),
-            Vertex3D::from_position(-floor_size, 0.0, floor_size).flat_shading(true),
-            Vertex3D::from_position( floor_size, 0.0,-floor_size).flat_shading(true),
-
-            Vertex3D::from_position(-floor_size, 0.0, floor_size).flat_shading(true),
-            Vertex3D::from_position( floor_size, 0.0, floor_size).flat_shading(true),
-            Vertex3D::from_position( floor_size, 0.0,-floor_size).flat_shading(true),
-        ]);
-
-        let mut vertices = Vec::new();
-        let blend = blend::Blend::from_path("src/data/test.blend");
-        loader::blender::load_model_faces(&blend, "Sphere", |face| {
-            for i in 0..face.vert_count {
-                vertices.push(
-                    Vertex3D::from_position(face.vert[i][0], face.vert[i][1], face.vert[i][2])
-                        .normal(face.norm[i][0], face.norm[i][1], face.norm[i][2])
-                        .uv(face.uv[i][0], face.uv[i][1])
-                        .color(1.0, 1.0, 0.0, 1.0)
-//                        .flat_shading(true)
-                );
-            }
-        });
-        let obj_mesh = renderer.generate_mesh_from_data(vertices);
-
-        let mut floor_obj = ObjectInstance::new(Arc::new(floor_mesh));
-        floor_obj.set_pos(0.0, 2.0, 0.0);
-
-        let mut test_obj = ObjectInstance::new(Arc::new(obj_mesh));
-        (floor_obj, test_obj)
-    };
-
-    let mut prev_sync = Box::new(sync::now(device.clone())) as Box<dyn GpuFuture>;
-    let mut running = true;
-    let mut recreate_swapchain = false;
-
-    let mut prev_time = time::precise_time_ns();
-    let mut t = 0.0f32;
-
-    let mut rot = [0.0f32, 0.0f32, 0.0f32];
-    let move_speed = 2.032;
-    // Q, W, E, A, S, D
-    mod Button {
-        pub const Q: usize = 0;
-        pub const W: usize = 1;
-        pub const E: usize = 2;
-        pub const A: usize = 3;
-        pub const S: usize = 4;
-        pub const D: usize = 5;
-    }
-    let mut button_states = [false; 6];
-
-    let mut cursor_center = LogicalPosition::new((dimensions[0] / 2) as f64, (dimensions[1] / 2) as f64); // (dimensions[0] / 2, dimensions[1] / 2).into();
-    window.set_cursor_position(cursor_center).unwrap();
-
-    let mut t_fps = 0.0;
-    let mut frames = 0;
-    while running {
-        let time = time::precise_time_ns();
-        let delta_ns = time - prev_time;
-        prev_time = time;
-        let delta = (delta_ns as f64 / 1e9f64) as f32;
-
-        frames += 1;
-        t_fps += delta;
-        if t_fps >= 1.0 {
-            println!("FPS: {}", frames);
-            t_fps -= 1.0;
-            frames = 0;
-        }
-
-
-        /* Update */{
-            t += delta;
-            test_object.set_pos(t.sin()*3.0, 0.0, 0.0);
-
-            let m = move_speed * delta;
-
-            let right = if button_states[Button::A] { -m }
-            else if button_states[Button::D] { m }
-            else { 0.0 };
-
-            let forward = if button_states[Button::W] { -m }
-            else if button_states[Button::S] { m }
-            else { 0.0 };
-
-            if button_states[Button::Q] { rot[1] -= delta * 90.0; }
-            if button_states[Button::E] { rot[1] += delta * 90.0; }
-
-            camera.move_by(forward, right, 0.0);
-            camera.set_angle(rot);
-        }
-
-        floor_object.update();
-        test_object.update();
-
-        prev_sync.cleanup_finished();
-
-        if recreate_swapchain {
-            let dimensions = if let Some(dimensions) = window.get_inner_size() {
-                let dimensions: (u32, u32) = dimensions.to_physical(window.get_hidpi_factor()).into();
-                [dimensions.0, dimensions.1]
-            } else {
-                return;
-            };
-            let (new_swapchain, new_images) = swapchain.recreate_with_dimension(dimensions).unwrap();
-            swapchain = new_swapchain;
-            images = new_images;
-            recreate_swapchain = false;
-        }
-
-        let (image_num, acquire_future) = match swapchain::acquire_next_image(swapchain.clone(), None) {
-            Ok(r) => r,
-            Err(AcquireError::OutOfDate) => {
-                recreate_swapchain = true;
-                return;
-            }
-            Err(err) => panic!("{:?}", err)
-        };
-
-        renderer.set_view_projection(camera.get_view_projection());
-
-        let future = renderer.render(
-            prev_sync.join(acquire_future),
-            images[image_num].clone(),
-            &vec![&floor_object, &test_object]
-        );
-
-        let future = future
-            .then_swapchain_present(main_queue.clone(), swapchain.clone(), image_num)
-            .then_signal_fence_and_flush();
-
-        match future {
-            Ok(future) => {
-                // This wait is required when using NVIDIA or running on macOS. See https://github.com/vulkano-rs/vulkano/issues/1247
-                future.wait(None).unwrap();
-                prev_sync = Box::new(future) as Box<_>;
-            }
-            Err(FlushError::OutOfDate) => {
-                recreate_swapchain = true;
-                prev_sync = Box::new(sync::now(device.clone())) as Box<_>;
-            }
-            Err(e) => {
-                println!("{:?}", e);
-                return;
-            }
-        }
-
-
-        event_loop.poll_events(|event| {
-            match event {
-                winit::Event::WindowEvent { event, .. } => {
-                    match event {
-                        winit::WindowEvent::CursorMoved { position, .. } => {
-                            if mouse_hold_state {
-                                let dx = position.x - cursor_center.x;
-                                let dy = position.y - cursor_center.y;
-                                window.set_cursor_position(cursor_center).unwrap();
-                                rot[1] += dx as f32 * 0.2;
-                                rot[0] -= dy as f32 * 0.2;
-                            }
-                        },
-
-                        winit::WindowEvent::KeyboardInput { input: winit::KeyboardInput { virtual_keycode: Some(key), state, .. }, .. } => {
-                            use winit::VirtualKeyCode::*;
-                            use winit::ElementState;
-                            match key {
-                                Q => button_states[Button::Q] = state == ElementState::Pressed,
-                                W => button_states[Button::W] = state == ElementState::Pressed,
-                                E => button_states[Button::E] = state == ElementState::Pressed,
-                                A => button_states[Button::A] = state == ElementState::Pressed,
-                                S => button_states[Button::S] = state == ElementState::Pressed,
-                                D => button_states[Button::D] = state == ElementState::Pressed,
-
-                                F1 => if state == ElementState::Pressed {
-                                    mouse_hold_state = !mouse_hold_state;
-                                    window.grab_cursor(mouse_hold_state);
-                                    window.hide_cursor(mouse_hold_state);
-                                    if mouse_hold_state {
-                                        window.set_cursor_position(cursor_center).unwrap();
-                                    }
-                                },
-
-                                Escape => running = false,
-                                _ => ()
-                            }
-                        }
-                        winit::WindowEvent::CloseRequested => {
-                            running = false;
-                        },
-                        winit::WindowEvent::Resized(size) => {
-                            recreate_swapchain = true;
-                            let aspect = size.width as f32 / size.height as f32;
-                            let projection = cgmath::perspective(cgmath::Deg(60.0), aspect, 0.01, 50.0);
-                            camera.set_projection(projection);
-                        },
-                        _ => ()
-                    }
-                },
-                _ => ()
-            }
-        })
-
-    }
-
-}
-
-/// Remap keys for ease of use with my way of using them
-
+/// Current state of keyboard keys being pressed
 pub struct KeyboardState {
     keys: [bool; 255],
 }
@@ -598,11 +381,93 @@ impl KeyboardState {
 
 }
 
+/// Save mouse state, position, button states and move delta
+#[derive(Debug, PartialEq)]
+pub struct MouseState {
+    // Buttons
+    buttons: [bool; 3],
+    other_buttons: Vec<u8>, // Other currently down buttons with u8 ID
+
+    // Cursor Position and Move Speed
+    position: [f32; 2], // Current LogicalPosition
+    speed_updated: u8, // Then speed is updated current frame, 2 just now, 1 last frame, 0 old news
+    speed: [f32; 2], // Cursor move speed per sec (adjusted to delta)
+
+    // Scroll Wheel is not buffered and reported as it comes
+}
+impl Default for MouseState {
+    fn default() -> Self { Self {
+        buttons: [false; 3],
+        other_buttons: Vec::new(),
+
+        position: [0.0; 2],
+        speed_updated: 2,
+        speed: [0.0; 2],
+    }}
+}
+impl MouseState {
+
+    pub fn new() -> Self { MouseState::default() }
+
+    /// Update cursor speed
+    pub fn update(&mut self, delta: f32) {
+        if self.speed_updated <= 2 {
+            // 0, just set and will not be used until 1
+            // 1 use
+            // 2 old news
+            if self.speed_updated == 0 {
+                self.speed = [self.speed[0] * delta, self.speed[1] * delta];
+            } else if self.speed_updated == 2 {
+                self.speed = [0.0; 2];
+            }
+            self.speed_updated += 1;
+        }
+    }
+
+    /// Sets new current position
+    pub fn pos_event(&mut self, pos: LogicalPosition) {
+        self.position = [pos.x as f32, pos.y as f32];
+    }
+
+    pub fn move_event(&mut self, mouse_delta: (f64, f64)) {
+        self.speed_updated = 0;
+        self.speed = [mouse_delta.0 as f32, mouse_delta.1 as f32];
+    }
+
+    /// New Mouse Button Pressed
+    pub fn key_event(&mut self, button: MouseButton, state: ElementState) {
+        match button {
+            MouseButton::Left => self.buttons[0] = state == ElementState::Pressed,
+            MouseButton::Right => self.buttons[1] = state == ElementState::Pressed,
+            MouseButton::Middle => self.buttons[2] = state == ElementState::Pressed,
+            MouseButton::Other(id) => {
+                if state == ElementState::Pressed {
+                    if !self.other_buttons.contains(&id) { self.other_buttons.push(id) }
+                } else {
+                    self.other_buttons.retain(|f| *f != id);
+                }
+            },
+        };
+    }
+
+    pub fn state_of(&self, button: MouseButton) -> bool {
+        match button {
+            MouseButton::Left => self.buttons[0],
+            MouseButton::Right => self.buttons[1],
+            MouseButton::Middle => self.buttons[2],
+            MouseButton::Other(id) => self.other_buttons.contains(&id),
+        }
+    }
+
+}
+
 mod test {
-    use winit::{VirtualKeyCode, ElementState};
-    use crate::main_processor::KeyboardState;
+    use winit::{ElementState};
 
     #[test] fn test_keyboard_state() {
+        use crate::main_processor::KeyboardState;
+        use winit::{VirtualKeyCode};
+
         let mut state = KeyboardState::new();
 
         state.key_event(VirtualKeyCode::Q, ElementState::Pressed);
@@ -620,6 +485,98 @@ mod test {
         state.key_event(VirtualKeyCode::W, ElementState::Released);
         assert_eq!(state.state_of(VirtualKeyCode::Q), false);
         assert_eq!(state.state_of(VirtualKeyCode::W), false);
+    }
+
+    #[test] fn test_mouse_state() {
+        use crate::main_processor::MouseState;
+        use winit::{ MouseButton, dpi::LogicalPosition };
+
+        let mut state = MouseState::new();
+
+        // Test Default Buttons
+        {
+            fn with_state(buttons: [bool; 3]) -> MouseState { MouseState {
+                buttons, ..MouseState::default()
+            } }
+
+            state.key_event(MouseButton::Right, ElementState::Pressed);
+            assert_eq!(state, with_state([false, true, false]));
+
+            state.key_event(MouseButton::Left, ElementState::Pressed);
+            assert_eq!(state, with_state([true, true, false]));
+
+            state.key_event(MouseButton::Right, ElementState::Released);
+            assert_eq!(state, with_state([true, false, false]));
+
+            state.key_event(MouseButton::Right, ElementState::Released);
+            assert_eq!(state, with_state([true, false, false]));
+
+            state.key_event(MouseButton::Left, ElementState::Released);
+            assert_eq!(state, with_state([false, false, false]));
+        }
+
+        // Test Extra Buttons
+        {
+            fn with_others(other_buttons: Vec<u8>) -> MouseState { MouseState {
+                other_buttons, ..MouseState::default()
+            } }
+
+            state.key_event(MouseButton::Other(0), ElementState::Pressed);
+            assert_eq!(state, with_others(vec![0]));
+
+            state.key_event(MouseButton::Other(1), ElementState::Pressed);
+            assert_eq!(state, with_others(vec![0, 1]));
+
+            state.key_event(MouseButton::Other(1), ElementState::Pressed);
+            assert_eq!(state, with_others(vec![0, 1]));
+
+            state.key_event(MouseButton::Other(0), ElementState::Released);
+            assert_eq!(state, with_others(vec![1]));
+
+            state.key_event(MouseButton::Other(0), ElementState::Released);
+            assert_eq!(state, with_others(vec![1]));
+
+            state.key_event(MouseButton::Other(1), ElementState::Released);
+            assert_eq!(state, with_others(vec![]));
+        }
+
+        // Test position update
+        {
+
+//            fn with_cursor(x: f32, y: f32, px: f32, py: f32, dx: f32, dy: f32, position_dirty: bool) -> MouseState { MouseState {
+//                position: [x, y], prev_position: [px, py], speed: [dx, dy], position_dirty, .. MouseState::default()
+//            }}
+//
+//            // Quick cycle
+//            state.pos_event(LogicalPosition::new(10.0, 10.0));
+//            assert_eq!(state, with_cursor(10.0, 10.0, 0.0, 0.0, 0.0, 0.0, true));
+//
+//            state.update(0.1);
+//            assert_eq!(state, with_cursor(10.0, 10.0, 10.0, 10.0, 1.0, 1.0, true));
+//
+//            state.update(0.1);
+//            assert_eq!(state, with_cursor(10.0, 10.0, 10.0, 10.0, 0.0, 0.0, false));
+//
+//            // Fast Cycle
+//            state.pos_event(LogicalPosition::new(0.0, 0.0));
+//            assert_eq!(state, with_cursor(0.0, 0.0, 10.0, 10.0, 0.0, 0.0, true));
+//
+//            state.update(0.1);
+//            state.pos_event(LogicalPosition::new(10.0, 0.0));
+//            assert_eq!(state, with_cursor(10.0, 0.0, 0.0, 0.0, -1.0, -1.0, true));
+//
+//            state.update(0.1);
+//            state.pos_event(LogicalPosition::new(20.0, 0.0));
+//            assert_eq!(state, with_cursor(20.0, 0.0, 10.0, 0.0, 1.0, 0.0, true));
+//
+//            state.update(0.1);
+//            assert_eq!(state, with_cursor(20.0, 0.0, 20.0, 0.0, 1.0, 0.0, true));
+//
+//            state.update(0.1);
+//            assert_eq!(state, with_cursor(20.0, 0.0, 20.0, 0.0, 0.0, 0.0, false));
+        }
+
+
     }
 
 }

@@ -1,7 +1,10 @@
 
-pub mod old_renderer;
+
 pub mod object;
-pub mod renderer;
+pub mod image;
+
+pub mod renderer_2d;
+pub mod renderer_3d;
 
 use cgmath::{Matrix4, SquareMatrix, Vector3, Deg};
 
@@ -80,6 +83,15 @@ impl Camera {
     pub fn set_angle(&mut self, angle: [f32; 3]) {
         if self.angle[0] != angle[0] || self.angle[1] != angle[1] || self.angle[2] != angle[2] {
             self.angle = angle;
+            self.dirty = true;
+        }
+    }
+
+    pub fn rotate_by(&mut self, x: f32, y: f32, z: f32) {
+        if x != 0.0 || y != 0.0 || z != 0.0 {
+            self.angle[0] += x;
+            self.angle[1] += y;
+            self.angle[2] += z;
             self.dirty = true;
         }
     }
