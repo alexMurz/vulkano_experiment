@@ -28,6 +28,9 @@ use cgmath::{Matrix4, SquareMatrix, vec3};
 use vulkano::buffer::BufferSlice;
 use blend::parsers::blend::Block::Rend;
 
+pub mod cache;
+
+use cache::{ Render2DCache, Render2DCacheError };
 
 mod vs {
     vulkano_shaders::shader! {
@@ -117,7 +120,7 @@ pub struct Renderer2D {
     // Basics
     queue: Arc<Queue>,
     render_pass: Arc<dyn RenderPassAbstract + Send + Sync>,
-    flat_pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>, // Pipeline with no textures
+    pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>, // Pipeline with no textures
     dyn_state: DynamicState,
 
     vbo: Arc<dyn BufferAccess + Send + Sync>,
@@ -195,7 +198,7 @@ impl Renderer2D {
         Self {
             queue,
             render_pass,
-            flat_pipeline,
+            pipeline: flat_pipeline,
             dyn_state: DynamicState::none(),
 
             clear_color: [1.0; 4],
@@ -265,7 +268,21 @@ impl Renderer2D {
     pub fn start_image_content<I>(&mut self, image: &mut I) -> Renderer2DCall
         where I: ImageContentAbstract + Send + Sync
     {
-        self.start_image_uniform(image.get_uniform(&self.flat_pipeline, 0))
+        self.start_image_uniform(image.get_uniform(&self.pipeline, 0))
+    }
+
+    pub fn render_cache(&mut self, cache: &mut Render2DCache) {
+        let (buff, tex) = cache.access(&self.pipeline, 0);
+        // skip drawing if buffer slice is non (no instances)
+        if buff.is_some() {
+            self.cbb = Some(self.cbb.take().unwrap()
+                .draw(self.pipeline.clone(), &self.dyn_state,
+                      vec![self.vbo.clone(), buff.unwrap()], (tex), vs::ty::PushData {
+                        viewport: self.viewport_mat.into()
+                    }
+                ).unwrap()
+            );
+        }
     }
 
     /// Render current batch and clear instance buffer
@@ -282,7 +299,7 @@ impl Renderer2D {
             }
 
             let slice = BufferSlice::from_typed_buffer_access(self.ibo.clone()).slice(0 .. self.ibo_data.len()).unwrap();
-            cbb = cbb.draw(self.flat_pipeline.clone(), &self.dyn_state,
+            cbb = cbb.draw(self.pipeline.clone(), &self.dyn_state,
                            vec![self.vbo.clone(), Arc::new(slice)],
                            (texture), (vs::ty::PushData {
                     viewport: self.viewport_mat.into()
