@@ -83,6 +83,11 @@ impl ImageContent {
     pub fn is_ready(&self) -> bool { *self.ready.lock().unwrap() }
     pub fn recreate_uniform(&mut self) { self.uniform = None; }
 
+    /// Return sampler
+    pub fn get_sampler(&self) -> Arc<Sampler> { self.sampler.clone() }
+    /// Return image with no check if it is ready to use
+    pub fn get_image(&self) -> Arc<dyn ImageViewAccess + Send + Sync> { self.image.clone() }
+
     fn access(&self) -> Result<Arc<dyn ImageViewAccess + Send + Sync>, AccessError> {
         if !self.is_ready() {
             Err(AccessError::NotReadyError)
