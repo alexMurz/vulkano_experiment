@@ -497,6 +497,25 @@ impl Peek<String, DataObtainError> for Data {
 }
 
 // #########################
+// Convert primitives into Data
+impl From<bool> for Data    { fn from(v: bool)  -> Self { Data::Bool(v) } }
+impl From<u8> for Data      { fn from(v: u8)    -> Self { Data::U8(v) } }
+impl From<u16> for Data     { fn from(v: u16)   -> Self { Data::U16(v) } }
+impl From<u32> for Data     { fn from(v: u32)   -> Self { Data::U32(v) } }
+impl From<u64> for Data     { fn from(v: u64)   -> Self { Data::U64(v) } }
+impl From<u128> for Data    { fn from(v: u128)  -> Self { Data::U128(v) } }
+impl From<i8> for Data      { fn from(v: i8)    -> Self { Data::I8(v) } }
+impl From<i16> for Data     { fn from(v: i16)   -> Self { Data::I16(v) } }
+impl From<i32> for Data     { fn from(v: i32)   -> Self { Data::I32(v) } }
+impl From<i64> for Data     { fn from(v: i64)   -> Self { Data::I64(v) } }
+impl From<i128> for Data    { fn from(v: i128)  -> Self { Data::I128(v) } }
+impl From<f32> for Data     { fn from(v: f32)   -> Self { Data::F32(v) } }
+impl From<f64> for Data     { fn from(v: f64)   -> Self { Data::F64(v) } }
+impl From<&str> for Data    { fn from(v: &str)  -> Self { Data::String(v.into()) } }
+// Array
+impl From<Vec<Data>> for Data { fn from(v: Vec<Data>)  -> Self { Data::Array(v) } }
+
+// #########################
 // Work with Object, Array, and None types for Data
 /// Do all data obtaining by hand to make sure it is all ok and autocomplete works, so no macros
 impl Data {
@@ -554,7 +573,7 @@ macro_rules! DataObject {
     ( $( $key:expr => $val:expr ),* ) => {
         let mut tmp_map = std::collections::BTreeMap::new();
         $(
-            tmp_map.insert(stringify!($key).to_string(), $val);
+            tmp_map.insert(stringify!($key).to_string(), $val.into());
         )*
         Data::Object(tmp_map)
     }
@@ -649,9 +668,9 @@ mod test {
                 }
                 fn write(&self) -> Data {
                     DataObject! {
-                        ver => Data::U16(1),
-                        x => Data::F32(self.x),
-                        y => Data::F32(self.y)
+                        ver => 1u16,
+                        x => self.x,
+                        y => self.y
                     }
                 }
             }
@@ -699,10 +718,10 @@ mod test {
                 }
                 fn write(&self) -> Data {
                     DataObject! {
-                        ver => Data::U16(2),
-                        x => Data::F32(self.x),
-                        y => Data::F32(self.y),
-                        z => Data::F32(self.z)
+                        ver => 2,
+                        x => self.x,
+                        y => self.y,
+                        z => self.z
                     }
                 }
             }
