@@ -8,22 +8,32 @@ use std::{
     io::Cursor,
     iter::Iterator,
     sync::Arc,
+    path::Path,
 };
-use crate::graphics::{
-    Camera,
-    image::{
-        ImageContentAbstract, ImageContent,
-        sampler_pool::{ SamplerParams, SamplerPool },
+use crate::{
+    graphics::{
+        Camera,
+        image::{
+            ImageContentAbstract, ImageContent,
+            atlas::{
+                AtlasBuilder,
+                TextureAtlas,
+                AtlasImageResolver,
+                DirectoryImageResolver,
+            },
+            sampler_pool::{ SamplerParams, SamplerPool },
+        },
+        renderer_3d::{
+            lighting_system::{ LightSource, LightKind, ShadowKind },
+            mesh::{ Vertex3D, MeshAccess, MaterialMeshSlice, MeshData, MaterialData, ObjectInstance },
+            Renderer3D,
+        },
+        renderer_2d::Renderer2D,
+        object::{
+            ScreenVertex, ScreenInstance
+        }
     },
-    renderer_3d::{
-        lighting_system::{ LightSource, LightKind, ShadowKind },
-        mesh::{ Vertex3D, MeshAccess, MaterialMeshSlice, MeshData, MaterialData, ObjectInstance },
-        Renderer3D,
-    },
-    renderer_2d::Renderer2D,
-    object::{
-        ScreenVertex, ScreenInstance
-    }
+    sync::{ Loader, LoaderError },
 };
 use vulkano::{
     image::{ ImageAccess, AttachmentImage, ImageUsage },
@@ -32,17 +42,18 @@ use vulkano::{
     format::Format,
     sync::GpuFuture
 };
+use std::ops::Deref;
 
 mod ui_2d_pass;
 
 /// Main Game Entry
 pub struct GameEntry {
     camera: Camera,
-    floor_object: ObjectInstance,
-    test_object: ObjectInstance,
+//    atlas: TextureAtlas,
 
     pass_2d: ui_2d_pass::UI2DPass,
 
+    transient_image: Arc<AttachmentImage>,
     renderer_2d: Renderer2D,
     renderer_3d: Renderer3D,
 
@@ -52,119 +63,148 @@ pub struct GameEntry {
 }
 impl GameEntry {
     pub fn new(init_frame: &mut Frame) -> Self {
-        let image = ImageContent::from_bytes(
-            init_frame.queue.clone(),
-            init_frame.sampler_pool.with_params(SamplerParams::simple_repeat()),
-            Cursor::new(include_bytes!("../data/icon512.png").to_vec()),
-            Format::R8G8B8A8Srgb,
-        );
+//        let image2 = ImageContent::new_with_bytes(
+//            init_frame.queue.clone(),
+//            init_frame.sampler_pool.with_params(SamplerParams::simple_repeat()),
+//            Cursor::new(include_bytes!("../data/icon128.png").to_vec()),
+//            Format::R8G8B8A8Srgb,
+//        );
+//        let image1 = ImageContent::new_with_bytes(
+//            init_frame.queue.clone(),
+//            init_frame.sampler_pool.with_params(SamplerParams::simple_repeat()),
+//            Cursor::new(include_bytes!("../data/icon512.png").to_vec()),
+//            Format::R8G8B8A8Srgb,
+//        );
 
         // 2D UI Pass
         let mut pass_2d = ui_2d_pass::UI2DPass::new(init_frame);
 
-        // Renderer2D renders into attachment to use in renderer3D
-        let mut renderer_2d = Renderer2D::new(init_frame.queue.clone(), Format::R8G8B8A8Snorm, 1000*1000);
+        // Wait on image before use
+//        image1.flush();
+//        image2.flush();
 
+        // Atlas Image
+//        let am = ImageContent::load_image(
+//            init_frame.queue.clone(),
+//            Cursor::new(include_bytes!("../data/icon512.png").to_vec()),
+//            Format::R8G8B8A8Srgb,
+//        );
+
+        // Atlas Test
+        let img_bytes = include_bytes!("../data/icon512.png").to_vec();
+        let atlas = TextureAtlas::start()
+            .set_max_dims(1024)
+            .set_padding(1, 1)
+            .set_background_color(1.0, 0.0, 1.0, 1.0)
+            .set_format(Format::R8G8B8A8Snorm)
+            .add_loader("icon512.png", ImageContent::load_image(
+                init_frame.queue.clone(),
+                Cursor::new(img_bytes),
+                Format::R8G8B8A8Srgb)
+            ).unwrap().set_scl([0.7, 0.7]).next()
+//            .add_data("icon512.png", Cursor::new(img_bytes)).unwrap().set_scl([0.5, 0.5]).next()
+            .build(init_frame).unwrap()
+            .unwrap();
+
+        // Transient image between renders and bake
+//        ImageContent::load_image()
+        let transient_image = AttachmentImage::new(init_frame.queue.device().clone(), [1, 1], Format::R8G8B8A8Snorm).unwrap();
+
+        let mut renderer_2d = Renderer2D::new(init_frame.queue.clone(), Format::R8G8B8A8Snorm, 1000);
         let mut renderer_3d = Renderer3D::new(init_frame.queue.clone(), init_frame.image.format());
+        // Bake output onto output renderer and flip Y
 
         /* Setup lighting */ {
             /* Ambient */ {
                 let mut source = renderer_3d.create_light_source(LightKind::Ambient);
                 source.borrow_mut().active = true;
-                source.borrow_mut().col(0.1, 0.1, 0.3);
-                source.borrow_mut().dist(0.1);
+                source.borrow_mut().col(0.2, 0.2, 0.2);
+//                source.borrow_mut().dist(0.1);
             }
 
             /* Spot Light */{
                 let mut source = renderer_3d.create_light_source(LightKind::PointLight);
                 source.borrow_mut().active = false;
-                source.borrow_mut().pos(0.0, -1.0, 3.0);
-                source.borrow_mut().col(0.8, 0.4, 0.2);
-                source.borrow_mut().dist(10.0);
+                source.borrow_mut().pos(0.0, 5.0, 0.0);
+                source.borrow_mut().col(1.0, 0.5, 0.5);
+                source.borrow_mut().int(0.2);
+                source.borrow_mut().dist(20.0);
             }
 
-            let light_count = 4;
-            let light_intensity = 0.5; // 1.0 / light_count as f32;
+            let light_count = 5;
+            let light_intensity = 0.2; // 1.0 / light_count as f32;
             let res_sq = 1024;
             let light_res = [res_sq, res_sq];
             for i in 0..light_count {
                 let x = (i as f32 / light_count as f32 * 3.1415 * 2.0).sin() * 5.0;
                 let y = (i as f32 / light_count as f32 * 3.1415 * 2.0).cos() * 5.0;
                 let mut source = renderer_3d.create_light_source(LightKind::ConeWithShadow(
-                    ShadowKind::Cone::with_projection(45.0, light_res)
+                    ShadowKind::Cone::with_projection(90.0, light_res)
                 ));
-                source.borrow_mut().pos(x, -2.0, y);
+                source.borrow_mut().pos(x, 5.0, y);
                 source.borrow_mut().look_at(0.0, 0.0, 0.0);
                 source.borrow_mut().int(light_intensity);
-                source.borrow_mut().dist(10.0);
+                source.borrow_mut().dist(20.0);
             }
         }
 
-        // Create
-        let (mut floor_object, mut test_object) = {
+        // Create objects
+        let mut geom = {
 
-            let floor_size = 10.0;
+            let floor_size = 5.0;
             let floor_mesh = renderer_3d.generate_mesh_from_data(vec![
-                Vertex3D::from_position(-floor_size, 0.0,-floor_size).uv(0.0, 0.0).color(1.0, 1.0, 1.0, 1.0),
-                Vertex3D::from_position(-floor_size, 0.0, floor_size).uv(0.0, 1.0).color(1.0, 1.0, 1.0, 1.0),
-                Vertex3D::from_position( floor_size, 0.0,-floor_size).uv(1.0, 0.0).color(1.0, 1.0, 1.0, 1.0),
+                Vertex3D::from_position(-floor_size, 0.0,-floor_size).uv(0.0, 0.0).normal(0.0, 1.0, 0.0),
+                Vertex3D::from_position(-floor_size, 0.0, floor_size).uv(0.0, 1.0).normal(0.0, 1.0, 0.0),
+                Vertex3D::from_position( floor_size, 0.0,-floor_size).uv(1.0, 0.0).normal(0.0, 1.0, 0.0),
+                Vertex3D::from_position( floor_size, 0.0, floor_size).uv(1.0, 1.0).normal(0.0, 1.0, 0.0),
+            ], Some(vec![0, 1, 2, 1, 3, 2]));
 
-                Vertex3D::from_position(-floor_size, 0.0, floor_size).uv(0.0, 1.0).color(1.0, 1.0, 1.0, 1.0),
-                Vertex3D::from_position( floor_size, 0.0, floor_size).uv(1.0, 1.0).color(1.0, 1.0, 1.0, 1.0),
-                Vertex3D::from_position( floor_size, 0.0,-floor_size).uv(1.0, 0.0).color(1.0, 1.0, 1.0, 1.0),
-            ]);
-
-            let mut vertices = Vec::new();
-            let blend = blend::Blend::from_path("src/data/test.blend");
-            crate::loader::blender::load_model_faces(&blend, "Sphere", |face| {
-                for i in 0..face.vert_count {
-                    vertices.push(
-                        Vertex3D::from_position(face.vert[i][0], face.vert[i][1], face.vert[i][2])
-                            .normal(face.norm[i][0], face.norm[i][1], face.norm[i][2])
-                            .uv(face.uv[i][0], face.uv[i][1])
-                            .color(1.0, 1.0, 1.0, 1.0)
-                    );
-                }
-            });
-            let obj_mesh = renderer_3d.generate_mesh_from_data_later(vertices);
-
-            let mut floor_obj = ObjectInstance::new(floor_mesh);
+            let mut floor_obj = ObjectInstance::new(floor_mesh.unwrap());
             floor_obj.materials.push(MaterialMeshSlice {
-                slice: floor_obj.mesh_data.get_vbo_slice(),
+                vbo_slice: floor_obj.mesh_data.get_vbo_slice(),
+                ibo_slice: Some(floor_obj.mesh_data.get_ibo()),
                 material: {
                     let mut md = MaterialData::new();
-//                    md.set_diffuse_texture_with_sampler(renderer_2d_att.clone(), sampler_pool.with_params(SamplerParams::simple_repeat()));
+                    md.set_diffuse_texture_with_sampler(atlas.get_image(), init_frame.sampler_pool.with_params(SamplerParams::simple_repeat()));
                     md
                 }
             });
-            floor_obj.set_pos(0.0, 2.0, 0.0);
+            floor_obj.set_pos(0.0, -2.0, 0.0);
 
-            let mut test_obj = ObjectInstance::new(obj_mesh);
-            test_obj.materials.push(MaterialMeshSlice {
-                slice: test_obj.mesh_data.get_vbo_slice(),
-                material: {
-                    let mut md = MaterialData::new();
-                    md.set_flat_shading(false);
-                    md.set_diffuse_texture_with_sampler(pass_2d.output.clone(), init_frame.sampler_pool.with_params(SamplerParams::simple_repeat()));
-                    md
-                }
-            });
-            (floor_obj, test_obj)
+            let mut object_data = crate::loader::obj::load_objects(
+                &Path::new("src/data/test.obj"),
+                vec!["Plane"]
+            ).unwrap();
+
+            let mut obj1 = renderer_3d.generate_object(
+                object_data.remove("Plane").unwrap(),
+//                DirectoryImageResolver::new(
+//                    Path::new("src/data"),
+//                    init_frame.queue.clone(),
+//                    init_frame.sampler_pool.with_params(SamplerParams::simple_repeat())
+//                ).unwrap()
+                AtlasImageResolver::new(&atlas)
+            ).unwrap();
+
+            vec![floor_obj, obj1]
         };
 
-        renderer_3d.render_geometry.push(floor_object.clone());
-        renderer_3d.render_geometry.push(test_object.clone());
+        for v in geom.drain(..) { renderer_3d.render_geometry.push(v) }
 
         Self {
-            camera: Camera::new(Matrix4::identity()),
+            camera: {
+                let mut c = Camera::new(Matrix4::identity());
+                c.pos[2] = -5.0;
+                c
+            },
+//            atlas,
 
             pass_2d,
 
+            transient_image,
             renderer_2d,
             renderer_3d,
 
-            floor_object,
-            test_object,
 
             time: 0.0,
             speed_mod: 0.0,
@@ -172,7 +212,7 @@ impl GameEntry {
         }
     }
 
-    fn pass_2d(&mut self, delta: f32, frame: &mut Frame, future: Box<dyn GpuFuture>) -> Box<dyn GpuFuture> {
+    fn pass_2d(&mut self, delta: f32, frame: &mut Frame, future: Box<dyn GpuFuture + Send + Sync>) -> Box<dyn GpuFuture + Send + Sync> {
         self.pass_2d.render(&mut self.renderer_2d, future)
     }
 }
@@ -184,18 +224,20 @@ impl GameListener for GameEntry {
             cgmath::Deg(60.0), width as f32 / height as f32, 0.1, 100.0
         ));
 
+        self.transient_image = AttachmentImage::new(frame.queue.device().clone(), [width, height], Format::R8G8B8A8Snorm).unwrap();
 //        let aspect = width as f32 / height as f32;
         self.renderer_2d.set_viewport_window(1.0, 1.0);
     }
 
 
-    fn update(&mut self, delta: f32, frame: &mut Frame, future: Box<dyn GpuFuture>) -> Box<dyn GpuFuture> {
+    fn update(&mut self, delta: f32, frame: &mut Frame, mut future: Box<dyn GpuFuture>) -> Box<dyn GpuFuture> {
         self.time += delta;
+//        println!("FPS: {}", 1.0 / delta);
 
         /* Process Camera Movement */ {
             let forward = if frame.key_state(Keys::W) { 1.0 } else if frame.key_state(Keys::S) { -1.0 } else { 0.0 };
             let right = if frame.key_state(Keys::A) { 1.0 } else if frame.key_state(Keys::D) { -1.0 } else { 0.0 };
-            let up = if frame.key_state(Keys::R) { 1.0 } else if frame.key_state(Keys::F) { -1.0 } else { 0.0 };
+            let up = if frame.key_state(Keys::F) { 1.0 } else if frame.key_state(Keys::R) { -1.0 } else { 0.0 };
 
             let sprint = if frame.key_state(Keys::LShift) { 2.0 } else { 1.0 };
             let speed = 1.05f32.powf(self.speed_mod) * delta * sprint * 2.0;
@@ -203,14 +245,23 @@ impl GameListener for GameEntry {
 
             if self.holding_mouse {
                 let spd = frame.cursor_spd();
-                self.camera.rotate_by(-spd[1] * 40.0, spd[0] * 40.0, 0.0);
+                self.camera.rotate_by( spd[1] * 40.0, spd[0] * 40.0, 0.0);
             }
         }
 
-        let f = self.pass_2d(delta, frame, future);
+//        self.pass_2d.output = frame.image.clone();
+//        let mut future = self.pass_2d.render(&mut self.renderer_2d, future);
 
         self.renderer_3d.set_view_projection(self.camera.get_view_projection());
-        self.renderer_3d.render(f, frame.image.clone())
+        future = self.renderer_3d.render(future, frame.image.clone());
+
+//        future = self.renderer_3d.render(future, self.transient_image.clone());
+//        future = {
+//            self.bake_renderer.begin(frame.image.clone());
+//            self.bake_renderer.sta
+//        };
+
+        future
     }
 
     fn key_pressed(&mut self, frame: &mut Frame, keycode: Keys) {

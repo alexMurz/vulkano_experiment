@@ -1,15 +1,22 @@
 
 use std::sync::Arc;
-use vulkano::device::Queue;
-use vulkano::framebuffer::{Subpass, RenderPassAbstract};
-use vulkano::pipeline::{GraphicsPipelineAbstract, GraphicsPipeline};
-use vulkano::buffer::{BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer};
-use vulkano::pipeline::blend::{AttachmentBlend, BlendOp, BlendFactor};
-use vulkano::descriptor::DescriptorSet;
+use vulkano::{
+    device::Queue,
+    framebuffer::{ Subpass, RenderPassAbstract },
+    buffer::{ BufferAccess, ImmutableBuffer, BufferUsage, CpuAccessibleBuffer },
+    pipeline::{
+        GraphicsPipeline, GraphicsPipelineAbstract,
+        blend::{ AttachmentBlend, BlendOp, BlendFactor },
+        vertex::{ SingleBufferDefinition, OneVertexOneInstanceDefinition },
+    },
+    descriptor::{
+        DescriptorSet,
+        descriptor_set::PersistentDescriptorSet,
+    },
+    command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState},
+    sampler::{Sampler, Filter, MipmapMode, SamplerAddressMode}
+};
 use cgmath::{ Matrix4, SquareMatrix };
-use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, DynamicState};
-use vulkano::sampler::{Sampler, Filter, MipmapMode, SamplerAddressMode};
 use crate::graphics::renderer_3d::mesh::{
     Vertex3D, MeshAccess, MaterialMeshSlice, MeshData, MaterialData, ObjectInstance, MaterialDrawMode
 };
@@ -70,6 +77,8 @@ layout(location = 3) in vec2 v_uv;
 
 layout(set = 1, binding = 0) uniform Material {
     vec3 diffuse;
+    vec2 uv_remap_a;
+    vec2 uv_remap_b;
     int flat_shading;
 } material;
 
@@ -102,6 +111,8 @@ layout(location = 3) in vec2 v_uv;
 
 layout(set = 1, binding = 0) uniform Material {
     vec3 diffuse;
+    vec2 uv_remap_a;
+    vec2 uv_remap_b;
     int flat_shading;
 } material;
 layout(set = 1, binding = 1) uniform sampler2D u_texture;
@@ -114,7 +125,8 @@ void main() {
         faceNormal = normalize( -cross( tangent, bitangent ) );
     } else faceNormal = v_norm;
 
-    vec3 col = texture(u_texture, v_uv).rgb * material.diffuse * v_color;
+    vec2 uv = material.uv_remap_a + v_uv * (material.uv_remap_b - material.uv_remap_a);
+    vec3 col = texture(u_texture, uv).rgb * material.diffuse * v_color;
     f_color = vec4(col, 1.0);
     f_normal = faceNormal;
 }"
@@ -144,12 +156,13 @@ impl FlatPass {
                 .expect("failed to create shader module");
 
             Arc::new(GraphicsPipeline::start()
-                .vertex_input_single_buffer::<Vertex3D>()
+                .vertex_input(SingleBufferDefinition::<Vertex3D>::new())
                 .vertex_shader(vs.main_entry_point(), ())
                 .triangle_list()
                 .viewports_dynamic_scissors_irrelevant(1)
                 .fragment_shader(fs.main_entry_point(), ())
                 .depth_stencil_simple_depth()
+                .front_face_counter_clockwise() // Due to flipped Y coordinate, also change vertex order to CW
                 .cull_mode_back()
                 .render_pass(subpass)
                 .build(queue.device().clone())
@@ -201,11 +214,23 @@ impl FlatPass {
             model: matrices.0.into(),
             normal: matrices.1.into(),
         };
-        cbb.draw(self.pipeline.clone(), dyn_state,
-                 vec![mat.slice.clone()],
-                 (self.uniform_mat_set.clone(), mat.material.get_uniform(&self.pipeline, 1)),
-                 (push))
-            .unwrap()
+
+        if mat.ibo_slice.is_some() {
+            cbb.draw_indexed(
+                self.pipeline.clone(), dyn_state,
+                vec![mat.vbo_slice.clone()],
+                mat.ibo_slice.clone().unwrap(),
+                (self.uniform_mat_set.clone(), mat.material.get_uniform(&self.pipeline, 1)),
+                (push)
+            ).unwrap()
+        } else {
+            cbb.draw(
+                self.pipeline.clone(), dyn_state,
+                vec![mat.vbo_slice.clone()],
+                (self.uniform_mat_set.clone(), mat.material.get_uniform(&self.pipeline, 1)),
+                (push)
+            ).unwrap()
+        }
     }
 
 }
@@ -242,6 +267,7 @@ impl TexPass {
                 .viewports_dynamic_scissors_irrelevant(1)
                 .fragment_shader(fs.main_entry_point(), ())
                 .depth_stencil_simple_depth()
+                .front_face_counter_clockwise() // Due to flipped Y coordinate, also change vertex order to CW
                 .cull_mode_back()
                 .render_pass(subpass)
                 .build(queue.device().clone())
@@ -302,11 +328,28 @@ impl TexPass {
             model: matrices.0.into(),
             normal: matrices.1.into(),
         };
-        cbb.draw(self.pipeline.clone(), dyn_state,
-                 vec![mat.slice.clone()],
-                 (self.uniform_mat_set.clone(), mat.material.get_uniform(&self.pipeline, 1)),
-                 (push))
-            .unwrap()
+
+        if mat.ibo_slice.is_some() {
+            cbb.draw_indexed(
+                self.pipeline.clone(), dyn_state,
+                vec![mat.vbo_slice.clone()],
+                mat.ibo_slice.clone().unwrap(),
+                (self.uniform_mat_set.clone(), mat.material.get_uniform(&self.pipeline, 1)),
+                (push)
+            ).unwrap()
+        } else {
+            cbb.draw(
+                self.pipeline.clone(), dyn_state,
+                vec![mat.vbo_slice.clone()],
+                (self.uniform_mat_set.clone(), mat.material.get_uniform(&self.pipeline, 1)),
+                (push)
+            ).unwrap()
+        }
+//        cbb.draw(self.pipeline.clone(), dyn_state,
+//                 vec![mat.vbo_slice.clone()],
+//                 (self.uniform_mat_set.clone(), mat.material.get_uniform(&self.pipeline, 1)),
+//                 (push))
+//            .unwrap()
     }
 
 }

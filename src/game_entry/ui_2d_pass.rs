@@ -25,6 +25,7 @@ use vulkano::{
     image::{ ImageUsage, AttachmentImage },
     sync::GpuFuture
 };
+use vulkano::image::{ImageViewAccess, ImageAccess};
 
 // Game specific 2D Render for UI into image
 
@@ -34,15 +35,16 @@ pub struct UI2DPass {
     pub output: Arc<AttachmentImage>,
 }
 impl UI2DPass {
+
     pub fn new(frame: &mut Frame) -> Self {
-        let image = ImageContent::from_bytes(
+        let image = ImageContent::new_with_bytes(
             frame.queue.clone(),
             frame.sampler_pool.with_params(SamplerParams::simple_repeat()),
             Cursor::new(include_bytes!("../data/icon512.png").to_vec()),
             Format::R8G8B8A8Srgb,
         );
 
-        let res = 1024 * 8;
+        let res = 1024 * 1;
         let renderer_2d_att = AttachmentImage::with_usage(
             frame.queue.device().clone(), [res, res], Format::R8G8B8A8Snorm,
             ImageUsage {
@@ -52,23 +54,31 @@ impl UI2DPass {
             }
         ).unwrap();
 
-        let count = 1000;
+        let count = 2;
         let s = 1.0 / count as f32;
 
         let mut cache = Render2DCache::new(frame, count * count);
         cache.set_image((image.get_image(), image.get_sampler()));
 
-        for x in 0 .. count { for y in 0 .. count {
+        cache.append({
+            let s = 0.8;
+            let s2 = s / 2.0;
             let mut instance = ScreenInstance::new();
-            instance.set_transform(
-                x as f32 * s, y as f32 * s,
-                s, s, cgmath::Rad(0.0)
-            );
-            let xp = x as f32 / count as f32;
-            let yp = y as f32 / count as f32;
-            instance.set_color(xp, yp, 1.0-yp, 1.0);
-            cache.append(instance).unwrap();
-        } }
+            instance.set_transform(s2, s2, s, s, cgmath::Rad(0.0));
+            instance
+        }).unwrap();
+
+//        for x in 0 .. count { for y in 0 .. count {
+//            let mut instance = ScreenInstance::new();
+//            instance.set_transform(
+//                (x as f32 + 0.5) * s, (y as f32 + 0.5) * s,
+//                s, s, cgmath::Rad(0.0)
+//            );
+//            let xp = x as f32 / count as f32;
+//            let yp = y as f32 / count as f32;
+//            instance.set_color(1.0 - x as f32, 1.0 - y as f32, 1.0, 1.0);
+//            cache.append(instance).unwrap();
+//        } }
 
         Self {
             image,
@@ -79,7 +89,7 @@ impl UI2DPass {
 
 
     // Test just pushing instances in renderpass
-    fn render_req(&mut self, renderer: &mut Renderer2D, future: Box<dyn GpuFuture>) -> Box<dyn GpuFuture> {
+    fn render_req(&mut self, renderer: &mut Renderer2D, future: Box<dyn GpuFuture + Send + Sync>) -> Box<dyn GpuFuture + Send + Sync> {
         renderer.begin(self.output.clone());
         let mut pass = renderer.start_image_content(&mut self.image);
 
@@ -113,23 +123,30 @@ impl UI2DPass {
         };
         pass.render_instances_vec(arr);
 
-        pass.end_pass();
+        pass.end_call();
         renderer.end(future)
     }
 
     // Test drawing already prepared cache
-    fn render_cache(&mut self, renderer: &mut Renderer2D, future: Box<dyn GpuFuture>) -> Box<dyn GpuFuture> {
-        renderer.begin(self.output.clone());
+    fn render_cache<I>(&mut self, renderer: &mut Renderer2D, output: I, future: Box<dyn GpuFuture + Send + Sync>) -> Box<dyn GpuFuture + Send + Sync>
+        where I: ImageAccess + ImageViewAccess + Clone + Send + Sync + 'static
+    {
+        renderer.begin(output);
 
         renderer.render_cache(&mut self.cache);
 
         renderer.end(future)
     }
 
-    pub fn render(&mut self, renderer: &mut Renderer2D, future: Box<dyn GpuFuture>) -> Box<dyn GpuFuture> {
+    pub fn render_into<I>(&mut self, renderer: &mut Renderer2D, output: I, future: Box<dyn GpuFuture + Send + Sync>) -> Box<dyn GpuFuture + Send + Sync>
+        where I: ImageAccess + ImageViewAccess + Clone + Send + Sync + 'static
+    {
         if !self.image.is_ready() { return future; }
+        self.render_cache(renderer, output, future)
+    }
 
-//        self.render_req(renderer, future)
-        self.render_cache(renderer, future)
+    pub fn render(&mut self, renderer: &mut Renderer2D, future: Box<dyn GpuFuture + Send + Sync>) -> Box<dyn GpuFuture + Send + Sync> {
+        if !self.image.is_ready() { return future; }
+        self.render_cache(renderer, self.output.clone(), future)
     }
 }

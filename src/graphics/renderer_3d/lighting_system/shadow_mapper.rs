@@ -84,6 +84,7 @@ impl ShadowMapping {
                 .fragment_shader(fs.main_entry_point(), ())
                 .depth_stencil_simple_depth()
                 .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+                .front_face_counter_clockwise() // Due to flipped Y coordinate, also change vertex order to CW
                 .cull_mode_front()
                 .build(queue.device().clone())
                 .unwrap()
@@ -150,12 +151,16 @@ impl ShadowMapping {
                 for i in geometry.iter() {
                     let mvp = cone.vp * i.model_matrix();
                     if i.mesh_data.visible_in(mvp) {
+
+                        let vs_push = depth_vs::ty::PushData {
+                            mvp: mvp.into()
+                        };
                         if i.mesh_data.has_ibo() {
-                            unimplemented!()
+                            cbb = cbb.draw_indexed(self.pipeline.clone(), &self.dyn_state,
+                                     vec![i.mesh_data.get_vbo_slice()],
+                                     i.mesh_data.get_ibo(),
+                                     (), (vs_push)).unwrap();
                         } else {
-                            let vs_push = depth_vs::ty::PushData {
-                                mvp: mvp.into()
-                            };
                             cbb = cbb.draw(self.pipeline.clone(), &self.dyn_state,
                                            vec![i.mesh_data.get_vbo_slice()],
                                            (), (vs_push)).unwrap();

@@ -13,10 +13,16 @@ use vulkano::{
     image::{ ImageViewAccess, ImageAccess },
     sync::GpuFuture,
 };
+use crate::{
+    graphics::image::atlas::TextureRegion,
+    loader::VertexInfo,
+    sync::{ Loader, LoaderError },
+};
 use cgmath::{Matrix4, SquareMatrix, Vector3, Deg, Vector4, Matrix3, Matrix, BaseFloat, vec3};
 use std::sync::{ Arc, Mutex };
 use cgmath_culling::{FrustumCuller, BoundingBox, Intersection};
 use vulkano::buffer::CpuAccessibleBuffer;
+use vulkano::pipeline::input_assembly::Index;
 
 #[derive(Default, Copy, Clone)]
 pub struct Vertex3D {
@@ -49,10 +55,25 @@ impl Vertex3D {
     #[inline]pub fn uv(mut self, u: f32, v: f32) -> Self { self.uv = [u, v];self }
 
 }
+/// Derive from `loader::VertexInfo`
+impl From<VertexInfo> for Vertex3D {
+    fn from(v: VertexInfo) -> Self {
+        Self {
+            position: v.pos,
+            normal: v.norm,
+            uv: v.uv,
+            color: [1.0; 4],
+        }
+    }
+}
+
+// Impl for use in shader
 vulkano::impl_vertex!(Vertex3D, position, color, normal, uv);
 
 /// Type of MeshBuffer
 type MeshVBOType = dyn TypedBufferAccess<Content = [Vertex3D]> + Send + Sync;
+type MeshIBOType = dyn TypedBufferAccess<Content = [u32]> + Send + Sync;
+
 /// Trait to access mesh data
 pub trait MeshAccess {
 
@@ -67,7 +88,7 @@ pub trait MeshAccess {
     fn get_vbo_slice(&self) -> Arc<dyn BufferAccess + Send + Sync> { Arc::new(self.get_vbo().into_buffer_slice()) }
 
     fn has_ibo(&self) -> bool;
-    fn get_ibo(&self) -> Arc<dyn BufferAccess + Send + Sync>;
+    fn get_ibo(&self) -> Arc<MeshIBOType>;
 }
 
 /// Axis Aligned Bounding Box
@@ -110,28 +131,47 @@ impl MeshCulling {
 pub struct MeshData {
     vbo: Arc<MeshVBOType>,
     vbo_slice: Arc<dyn BufferAccess + Send + Sync + 'static>,
-    ibo: Option<Arc<dyn BufferAccess + Send + Sync + 'static>>,
+    ibo: Option<Arc<MeshIBOType>>,
     aabb: MeshCulling, // Rectangle describing model space AABB
 }
 impl MeshData {
-    pub fn from_data(queue: Arc<Queue>, data: Vec<Vertex3D>) -> Arc<Self> {
-        let (a, b) = Self::from_data_later(queue, data);
+    pub fn from_data(queue: Arc<Queue>, data: Vec<Vertex3D>, indices: Option<Vec<u32>>)
+        -> Arc<dyn MeshAccess + Send + Sync>
+    {
+        let (a, b) = Self::from_data_later(queue, data, indices);
         b.flush().unwrap();
-        Arc::new(a)
+        a
     }
-    pub fn from_data_later(queue: Arc<Queue>, data: Vec<Vertex3D>) -> (Self, Box<dyn GpuFuture + Send + Sync>) {
-        let (vbo, future) = ImmutableBuffer::from_iter(
+    pub fn from_data_later(queue: Arc<Queue>, data: Vec<Vertex3D>, indices: Option<Vec<u32>>)
+        -> (Arc<dyn MeshAccess + Send + Sync>, Box<dyn GpuFuture + Send + Sync + 'static>)
+    {
+        let (vbo, vbo_future) = ImmutableBuffer::from_iter(
             data.iter().cloned(),
             BufferUsage::vertex_buffer(),
             queue.clone(),
         ).unwrap();
 
-        (MeshData {
+        let (ibo, future) = if let Some(idxs) = indices {
+            let (ibo, ibo_future) = ImmutableBuffer::from_iter(
+                idxs.iter().cloned(),
+                BufferUsage::index_buffer(),
+                queue.clone()
+            ).unwrap();
+
+            (
+                Some(ibo as Arc<MeshIBOType>),
+                Box::new(ibo_future.join(vbo_future)) as Box<dyn GpuFuture + Send + Sync>
+            )
+        } else {
+            (None, Box::new(vbo_future) as Box<dyn GpuFuture + Send + Sync>)
+        };
+
+        (Arc::new(MeshData {
             vbo: vbo.clone(),
             vbo_slice: Arc::new(vbo.into_buffer_slice()),
-            ibo: None,
+            ibo,
             aabb: MeshCulling::from_vec(&data)
-        }, Box::new(future))
+        }), future)
     }
 }
 impl MeshAccess for MeshData {
@@ -139,42 +179,8 @@ impl MeshAccess for MeshData {
     fn get_vbo(&self) -> Arc<MeshVBOType> { self.vbo.clone() }
 
     fn has_ibo(&self) -> bool { self.ibo.is_some() }
-    fn get_ibo(&self) -> Arc<dyn BufferAccess + Send + Sync> { self.ibo.as_ref().unwrap().clone() }
+    fn get_ibo(&self) -> Arc<MeshIBOType> { self.ibo.as_ref().unwrap().clone() }
 }
-
-/// Loads mesh data asynchronously
-pub struct MeshDataAsync {
-    data: MeshData,
-    ready: Mutex<bool>,
-}
-impl MeshDataAsync {
-    pub fn from_data(queue: Arc<Queue>, data: Vec<Vertex3D>) -> Arc<Self> {
-        let (data, mut future) = MeshData::from_data_later(queue, data);
-
-        let mut ready = Mutex::new(false);
-        let value = Arc::new(Self { data, ready });
-
-
-        let mut t = value.clone();
-        rayon::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(3_000));
-            future.flush().unwrap();
-            *t.ready.lock().unwrap() = true;
-        });
-
-        value
-    }
-}
-impl MeshAccess for MeshDataAsync {
-    fn visible_in(&self, mat: Matrix4<f32>) -> bool { self.data.visible_in(mat) }
-    fn ready_for_use(&self) -> bool { *self.ready.lock().unwrap() }
-
-    fn get_vbo(&self) -> Arc<MeshVBOType> { self.data.get_vbo().clone() }
-
-    fn has_ibo(&self) -> bool { self.data.has_ibo() }
-    fn get_ibo(&self) -> Arc<dyn BufferAccess + Send + Sync> { self.data.get_ibo() }
-}
-
 
 /// Draw mode, selected for pipeline, based on amount of textures
 pub enum MaterialDrawMode {
@@ -200,7 +206,8 @@ pub struct MaterialData {
     material_buffer: Option<Arc<CpuAccessibleBuffer<MaterialColor>>>,
 
     // Attachment at 1
-    diffuse_texture: Option<(Arc<dyn ImageViewAccess + Send + Sync>, Arc<Sampler>)>
+    diffuse_texture: Option<(Arc<dyn ImageViewAccess + Send + Sync>, Arc<Sampler>)>,
+    diffuse_remap: [[f32; 2]; 2], // Remap UV to be from diffuse_remap[0] to diffuse_remap[1]
 }
 impl Default for MaterialData {
     fn default() -> Self { Self {
@@ -212,6 +219,7 @@ impl Default for MaterialData {
         uniform: None,
         material_buffer: None,
         diffuse_texture: None,
+        diffuse_remap: [[0.0, 0.0], [1.0, 1.0]],
     } }
 }
 impl MaterialData {
@@ -227,19 +235,34 @@ impl MaterialData {
         self.flat_shading = flag;
         self.material_dirty = true;
     }
+    pub fn set_uv_remap(&mut self, remap: [[f32; 2]; 2]) {
+        self.diffuse_remap = remap;
+    }
 
+    // Generate MaterialColor structure
     fn get_material_color(&self) -> MaterialColor {
         MaterialColor {
+            _dummy0: [0; 4].into(),
             diffuse: self.diffuse.into(),
+            uv_remap_a: self.diffuse_remap[0],
+            uv_remap_b: self.diffuse_remap[1],
             flat_shading: if self.flat_shading { 1 } else { 0 },
         }
     }
+
+    pub fn get_diffuse_remap_a(&self) -> [f32; 2] { self.diffuse_remap[0] }
+    pub fn get_diffuse_remap_b(&self) -> [f32; 2] { self.diffuse_remap[1] }
 
     // #############
     // Textures
     #[inline] pub fn set_diffuse_texture_with_sampler(&mut self, texture: Arc<dyn ImageViewAccess + Send + Sync>, sampler: Arc<Sampler>) {
         self.recreate = true;
         self.diffuse_texture = Some((texture, sampler));
+    }
+    pub fn set_diffuse_region(&mut self, region: &TextureRegion) {
+        self.set_diffuse_texture_with_sampler(region.texture.clone(), region.sampler.clone());
+        self.diffuse_remap = [region.uv_a, region.uv_b];
+        self.material_dirty = true;
     }
 
     #[inline] pub fn mode(&self) -> MaterialDrawMode {
@@ -298,7 +321,8 @@ impl MaterialData {
 /// Slice of some mesh with material attached
 #[derive(Clone)]
 pub struct MaterialMeshSlice {
-    pub slice: Arc<dyn BufferAccess + Send + Sync>,
+    pub vbo_slice: Arc<dyn BufferAccess + Send + Sync>,
+    pub ibo_slice: Option<Arc<MeshIBOType>>,
     pub material: MaterialData
 }
 

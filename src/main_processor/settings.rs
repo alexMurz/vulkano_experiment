@@ -11,6 +11,7 @@ use winit::{EventsLoop, WindowBuilder, Window, dpi::{ LogicalPosition, LogicalSi
 use std::sync::Arc;
 use std::borrow::Cow;
 use std::cell::RefCell;
+use vulkano::instance::InstanceExtensions;
 
 pub const WINDOW_TITLE: &str = "API";
 const ENGINE_NAME: &str = "Insomnia";

@@ -145,7 +145,6 @@ pub fn start_with_settings_and_listener<F>(
         let time = time::precise_time_ns();
         let delta = (time - prev_time) as f32 / 1e9;
         prev_time = time;
-        println!("FPS: {}", 1.0 / delta);
 
         // Do swapchain maintenance
         swapchain.update_if_required(&window);

@@ -100,10 +100,9 @@ pub fn load_model_faces<M>(blend: &blend::Blend, model_name: &str, mut face_map:
             uv_buff.swap(1, 2);
 
             face_map(Face {
-                vert_count: 3,
-                vert: &vert_buff,
-                norm: &norm_buff,
-                uv: &uv_buff
+                vert: vert_buff,
+                norm: norm_buff,
+                uv: uv_buff
             });
 
             indexi += 2;

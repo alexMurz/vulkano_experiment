@@ -8,7 +8,7 @@ use cgmath::{Matrix4, Point3, vec3};
 use vulkano::sync::GpuFuture;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState, CommandBuffer};
 use vulkano::pipeline::viewport::Viewport;
-use vulkano::buffer::{BufferUsage, ImmutableBuffer};
+use vulkano::buffer::{BufferUsage, ImmutableBuffer, BufferAccess, BufferSlice};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 
 use lighting_system::lighting_pass::LightingPass;
@@ -16,14 +16,23 @@ use lighting_system::{ LightSource, LightKind, ShadowKind };
 use std::cell::RefCell;
 
 mod geometry_pass;
+
 pub mod lighting_system;
 pub mod mesh;
+pub mod post_processing;
+
+use crate::loader::{
+    ObjectInfo, MaterialSlice, MaterialInfo, MaterialImageUsage
+};
+use crate::sync::{ Loader, LoaderError };
 use mesh::{
     Vertex3D, MeshAccess,
     MaterialMeshSlice,
-    MeshData, MeshDataAsync,
+    MeshData,
     MaterialData, ObjectInstance,
 };
+use crate::graphics::image::atlas::{TextureRegion, ImageResolver};
+use crate::graphics::renderer_3d::post_processing::bake_image::PostBakeImage;
 
 pub struct Renderer3D {
     // Geometry to draw
@@ -35,6 +44,7 @@ pub struct Renderer3D {
     dyn_state: DynamicState,
 
     // FB Attachments,
+    transient_buffer: Arc<AttachmentImage>,
     diffuse_buffer: Arc<AttachmentImage>,
     normal_buffer: Arc<AttachmentImage>,
     depth_buffer: Arc<AttachmentImage>,
@@ -42,16 +52,77 @@ pub struct Renderer3D {
     // Passes
     geom_pass: GeometryPass,
     lighting_pass: LightingPass,
+    bake_pass: PostBakeImage,
 }
 /// Comms with game_listener
 impl Renderer3D {
 
-    pub fn generate_mesh_from_data(&self, data: Vec<Vertex3D>) -> Arc<dyn MeshAccess + Send + Sync> {
-        MeshData::from_data(self.queue.clone(), data)
+    pub fn generate_mesh_from_data(&self, data: Vec<Vertex3D>, indices: Option<Vec<u32>>) -> Loader<Arc<dyn MeshAccess + Send + Sync + 'static>> {
+        MeshData::from_data_later(self.queue.clone(), data, indices).into()
     }
 
-    pub fn generate_mesh_from_data_later(&self, data: Vec<Vertex3D>) -> Arc<dyn MeshAccess + Send + Sync> {
-        MeshDataAsync::from_data(self.queue.clone(), data)
+    pub fn generate_object(&self, mut object: ObjectInfo, mut image_resolver: Box<dyn ImageResolver + Send + 'static>) -> Loader<ObjectInstance> {
+
+        fn generate_material(material: &MaterialInfo, resolver: &mut Box<dyn ImageResolver + Send + 'static>) -> MaterialData {
+            let mut data = MaterialData::new();
+            if material.diffuse_tex.is_some() {
+                data.set_diffuse_region(resolver.get(
+                    MaterialImageUsage::Diffuse,
+                    material.diffuse_tex.as_ref().unwrap()
+                ).unwrap());
+            }
+            data
+        }
+
+        let mut mesh_loader = self.generate_mesh_from_data(
+            object.vertices.iter()
+                .map(|x| x.clone().into())
+                .collect(),
+            if object.indices.is_empty() { None } else { Some(object.indices.iter().cloned().collect()) }
+        );
+        let queue = self.queue.clone();
+        Loader::with_closure(move || {
+            let mesh = mesh_loader.take();
+            // Object instance that we are building
+            let mut inst = ObjectInstance::new(mesh.clone());
+            // Futures to wait on before loading is complete
+            let mut future = Box::new(vulkano::sync::now(queue.device().clone())) as Box<dyn GpuFuture + Send + Sync>;
+
+            // Build Gpu-friendly materials from `MaterialInfo`
+            for m in object.materials.iter() { match m {
+                MaterialSlice::WithIndices { material, indices } => {
+                    let (ibo_buffer, ibo_future) = ImmutableBuffer::from_iter(
+                        indices.iter().cloned(),
+                        BufferUsage::index_buffer(),
+                        queue.clone()
+                    ).unwrap();
+                    future = Box::new(future.join(ibo_future));
+
+                    inst.materials.push(MaterialMeshSlice {
+                        vbo_slice: mesh.get_vbo_slice(),
+                        ibo_slice: Some(ibo_buffer),
+                        material: generate_material(material, &mut image_resolver)
+                    })
+                },
+                MaterialSlice::WithVertexSlice { material, vertex_slice } => {
+                    inst.materials.push(MaterialMeshSlice {
+                        vbo_slice: {
+                            Arc::new(BufferSlice::from_typed_buffer_access(mesh.get_vbo())
+                                .slice(vertex_slice.clone()
+                            ).unwrap())
+                        },
+                        ibo_slice: None,
+                        material: generate_material(material, &mut image_resolver)
+                    })
+                }
+            } }
+
+            // Wait on GpuFutures
+            future.flush().unwrap();
+            image_resolver.flush();
+
+            inst
+        })
     }
 
     pub fn create_light_source(&mut self, kind: LightKind) -> Arc<RefCell<LightSource>> {
@@ -71,6 +142,13 @@ impl Renderer3D {
                     load: Clear,
                     store: Store,
                     format: output_format,
+                    samples: 1,
+                },
+                // Transient color attachment
+                transient: {
+                    load: Clear,
+                    store: DontCare,
+                    format: Format::R8G8B8A8Snorm,
                     samples: 1,
                 },
                 // Will be bound to `self.diffuse_buffer`.
@@ -97,15 +175,21 @@ impl Renderer3D {
             passes: [
                 // Write to the diffuse, normals and depth attachments.
                 {
-                    color: [diffuse, normals],
-                    depth_stencil: {depth},
+                    color: [ diffuse, normals ],
+                    depth_stencil: { depth },
                     input: []
                 },
                 // Apply lighting by reading these three attachments and writing to `final_color`.
                 {
-                    color: [final_color],
+                    color: [ transient ],
                     depth_stencil: {},
-                    input: [diffuse, normals, depth]
+                    input: [ diffuse, normals, depth ]
+                },
+                // Trying to do post processor
+                {
+                    color: [ final_color ],
+                    depth_stencil: {},
+                    input: [ transient ]
                 }
             ]
         ).unwrap()) as Arc<dyn RenderPassAbstract + Send + Sync>;
@@ -115,6 +199,9 @@ impl Renderer3D {
             input_attachment: true,
             ..ImageUsage::none()
         };
+        let transient_buffer = AttachmentImage::with_usage(
+            queue.device().clone(), [1, 1], Format::R8G8B8A8Snorm, atch_usage
+        ).unwrap();
         let diffuse_buffer = AttachmentImage::with_usage(
             queue.device().clone(), [1, 1], Format::A2B10G10R10UnormPack32, atch_usage
         ).unwrap();
@@ -125,6 +212,7 @@ impl Renderer3D {
             queue.device().clone(), [1, 1], Format::D16Unorm, atch_usage
         ).unwrap();
 
+
         let geom_pass = GeometryPass::new(
             queue.clone(),
             Subpass::from(render_pass.clone(), 0).unwrap()
@@ -132,6 +220,10 @@ impl Renderer3D {
         let mut lighting_pass = LightingPass::new(
             queue.clone(),
             Subpass::from(render_pass.clone(), 1).unwrap()
+        );
+        let mut bake_pass = PostBakeImage::new(
+            queue.clone(),
+            Subpass::from(render_pass.clone(), 2).unwrap()
         );
 
 
@@ -142,12 +234,14 @@ impl Renderer3D {
             render_pass,
             dyn_state: DynamicState::none(),
 
+            transient_buffer,
             diffuse_buffer,
             normal_buffer,
             depth_buffer,
 
             geom_pass,
-            lighting_pass
+            lighting_pass,
+            bake_pass,
         }
     }
 
@@ -168,22 +262,32 @@ impl Renderer3D {
 
             let atch_usage = ImageUsage { transient_attachment: true, input_attachment: true, ..ImageUsage::none() };
 
-            self.diffuse_buffer = AttachmentImage::with_usage(self.queue.device().clone(),
-                                                              img_dims,
-                                                              Format::A2B10G10R10UnormPack32,
-                                                              atch_usage
+            self.diffuse_buffer = AttachmentImage::with_usage(
+                self.queue.device().clone(),
+                img_dims,
+                Format::A2B10G10R10UnormPack32,
+                atch_usage
             ).unwrap();
 
-            self.normal_buffer = AttachmentImage::with_usage(self.queue.device().clone(),
-                                                              img_dims,
-                                                              Format::R16G16B16A16Sfloat,
-                                                              atch_usage
+            self.normal_buffer = AttachmentImage::with_usage(
+                self.queue.device().clone(),
+                img_dims,
+                Format::R16G16B16A16Sfloat,
+                atch_usage
             ).unwrap();
 
-            self.depth_buffer = AttachmentImage::with_usage(self.queue.device().clone(),
-                                                            img_dims,
-                                                            Format::D16Unorm,
-                                                            atch_usage
+            self.depth_buffer = AttachmentImage::with_usage(
+                self.queue.device().clone(),
+                img_dims,
+                Format::D16Unorm,
+                atch_usage
+            ).unwrap();
+
+            self.transient_buffer = AttachmentImage::with_usage(
+                self.queue.device().clone(),
+                img_dims,
+                Format::R8G8B8A8Snorm,
+                atch_usage
             ).unwrap();
 
             self.dyn_state.viewports = Some(vec![Viewport {
@@ -197,6 +301,9 @@ impl Renderer3D {
                 self.normal_buffer.clone(),
                 self.depth_buffer.clone(),
             );
+            self.bake_pass.set_attachment(
+                self.transient_buffer.clone(),
+            )
         }
 
         // Prepare shadow map
@@ -206,6 +313,7 @@ impl Renderer3D {
         let framebuffer = Arc::new(
             Framebuffer::start(self.render_pass.clone())
                 .add(final_image.clone()).unwrap()
+                .add(self.transient_buffer.clone()).unwrap()
                 .add(self.diffuse_buffer.clone()).unwrap()
                 .add(self.normal_buffer.clone()).unwrap()
                 .add(self.depth_buffer.clone()).unwrap()
@@ -217,6 +325,7 @@ impl Renderer3D {
         ).unwrap()
             .begin_render_pass(framebuffer.clone(), true, vec![
                 [0.0, 0.0, 0.0, 1.0].into(),
+                [0.0, 0.0, 0.0, 1.0].into(),
                 [0.0, 0.0, 0.0, 0.0].into(),
                 [0.0, 0.0, 0.0, 0.0].into(),
                 1.0.into(),
@@ -227,12 +336,11 @@ impl Renderer3D {
             main_cbb.execute_commands(self.geom_pass.render(&self.dyn_state, &mut self.render_geometry)).unwrap()
         };
 
-        // Do Finalization
-        main_cbb = unsafe {
-            main_cbb = main_cbb.next_subpass(true).unwrap();
-            main_cbb = self.lighting_pass.render(main_cbb, &self.dyn_state);
-            main_cbb
-        };
+        // Do Lighting
+        main_cbb = self.lighting_pass.render(main_cbb.next_subpass(true).unwrap(), &self.dyn_state);
+
+        // Do post
+        main_cbb = self.bake_pass.render(main_cbb.next_subpass(false).unwrap(), &self.dyn_state);
 
         let main_cb = main_cbb.end_render_pass().unwrap().build().unwrap();
 

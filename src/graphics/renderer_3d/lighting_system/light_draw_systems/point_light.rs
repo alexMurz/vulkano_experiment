@@ -132,7 +132,6 @@ impl PointLight {
                 .unwrap()) as Arc<dyn GraphicsPipelineAbstract + Send + Sync>
         };
 
-
         let sampler = Sampler::new(queue.device().clone(),
             Filter::Linear, Filter::Linear, MipmapMode::Linear,
             SamplerAddressMode::ClampToEdge,

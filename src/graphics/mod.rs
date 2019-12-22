@@ -12,6 +12,8 @@ pub struct Camera {
     pub pos: [f32; 3],
     pub angle: [f32; 3], // Degrees
 
+    pub flip: [bool; 2], // Flip [x, y]
+
     // Current direction (read only)
     pub right: [f32; 3],
     pub forward: [f32; 3],
@@ -26,6 +28,7 @@ impl Camera {
         Self {
             pos: [0.0, 0.0, 0.0],
             angle: [0.0, 0.0, 0.0],
+            flip: [false, true],
 
             right: [1.0, 0.0, 0.0],
             forward: [0.0, 1.0, 0.0],
@@ -39,6 +42,7 @@ impl Camera {
 
     pub fn set_projection(&mut self, projection: Matrix4<f32>) {
         self.projection = projection;
+        self.projection[1][1] *= -1.0; // Flip Y
     }
 
     fn update(&mut self) {

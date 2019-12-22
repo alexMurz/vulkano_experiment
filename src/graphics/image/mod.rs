@@ -16,9 +16,12 @@ use std::{
     error, fmt,
 };
 use vulkano::pipeline::GraphicsPipelineAbstract;
+use vulkano::sync::GpuFuture;
+use crate::sync::Loader;
 
 mod loader;
 pub mod sampler_pool;
+pub mod atlas;
 
 #[derive(Debug)]
 pub enum AccessError {
@@ -46,9 +49,7 @@ pub trait ImageContentAbstract {
 /// Contains asynchronously loaded Immutable image and uniform associated for it
 pub struct ImageContent {
     sampler: Arc<Sampler>,
-    image: Arc<ImmutableImage<Format>>,
-    ready: Arc<Mutex<bool>>,
-
+    image: Loader<Arc<dyn ImageViewAccess + Send + Sync>>,
     // If None => Recreate uniform
     uniform: Option<Arc<dyn DescriptorSet + Send + Sync>>,
 }
@@ -57,43 +58,49 @@ impl Clone for ImageContent {
     fn clone(&self) -> Self { Self {
         sampler: self.sampler.clone(),
         image: self.image.clone(),
-        ready: self.ready.clone(),
         uniform: None,
     }}
 }
 /// Create new instance, check and access image
 impl ImageContent {
-    pub fn from_bytes(queue: Arc<Queue>, sampler: Arc<Sampler>, bytes: Cursor<Vec<u8>>, format: Format) -> Self {
-        let (image, future) = loader::load_png_image_from_bytes(queue, bytes, format);
 
-        let ready = Arc::new(Mutex::new(false));
-        let t = ready.clone();
-        rayon::spawn(move || {
-            future.flush().unwrap();
-            *t.lock().unwrap() = true;
-        });
+    /// Load image info
+    pub fn load_image_data(bytes: Cursor<Vec<u8>>) -> loader::PNGData {
+        loader::load_png_data_from_bytes(bytes)
+    }
+
+    /// Load image, from file bytes
+    pub fn load_image(queue: Arc<Queue>, bytes: Cursor<Vec<u8>>, format: Format) -> Loader<Arc<dyn ImageViewAccess + Send + Sync>> {
+        let (a, b) = loader::load_png_image_from_bytes(queue, bytes, format);
+        Loader::with_gpu_future(a, b)
+    }
+
+    pub fn new_with_bytes(queue: Arc<Queue>, sampler: Arc<Sampler>, bytes: Cursor<Vec<u8>>, format: Format) -> Self {
+        let image_loader = ImageContent::load_image(queue, bytes, format);
 
         Self {
             sampler,
-            image,
-            ready,
+            image: image_loader,
             uniform: None,
         }
     }
-    pub fn is_ready(&self) -> bool { *self.ready.lock().unwrap() }
+    pub fn is_ready(&self) -> bool { self.image.is_ready() }
     pub fn recreate_uniform(&mut self) { self.uniform = None; }
 
     /// Return sampler
     pub fn get_sampler(&self) -> Arc<Sampler> { self.sampler.clone() }
     /// Return image with no check if it is ready to use
-    pub fn get_image(&self) -> Arc<dyn ImageViewAccess + Send + Sync> { self.image.clone() }
+    pub fn get_image(&self) -> Arc<dyn ImageViewAccess + Send + Sync> { self.image.get_ref().clone() }
 
-    fn access(&self) -> Result<Arc<dyn ImageViewAccess + Send + Sync>, AccessError> {
-        if !self.is_ready() {
-            Err(AccessError::NotReadyError)
-        } else {
-            Ok(self.image.clone())
-        }
+    /// Wait for image to load
+    pub fn flush(&self) { while !self.is_ready() {} }
+
+    pub fn access(&self) -> Result<Arc<dyn ImageViewAccess + Send + Sync>, AccessError> {
+//        if !self.is_ready() {
+//            Err(AccessError::NotReadyError)
+//        } else {
+            Ok(self.get_image())
+//        }
     }
 }
 /// Content Access Interface for ImageContent

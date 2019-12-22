@@ -130,7 +130,7 @@ impl Render2DCache {
         ).unwrap()
             .copy_buffer(self.buffer.clone(), new_buffer.clone()).unwrap()
             .build().unwrap();
-        cbb.execute(frame.queue.clone()).unwrap().flush();
+        cbb.execute(frame.queue.clone()).unwrap().flush().unwrap();
 
         // New buffer is ready, drop old arc
         self.buffer = new_buffer;
@@ -153,7 +153,7 @@ impl Render2DCache {
 
     /// Replace instance at position with different
     pub fn set(&mut self, pos: usize, instance: ScreenInstance) -> Result<(), Render2DCacheError> {
-        if pos < 0 || pos >= self.pos { return Err(Render2DCacheError::OutOfBounds(pos, self.pos)) }
+        if pos >= self.pos { return Err(Render2DCacheError::OutOfBounds(pos, self.pos)) }
         let mut writer = self.buffer.write().unwrap();
         writer[pos] = instance;
         Ok(())

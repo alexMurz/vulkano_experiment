@@ -11,7 +11,7 @@ use vulkano::{
 };
 
 fn hash_f32<H: Hasher>(f: f32, state: &mut H) {
-    #![feature(float_to_from_bytes)]
+//    #![feature(float_to_from_bytes)]
     let bytes = f.to_be_bytes();
     bytes.hash(state);
 }

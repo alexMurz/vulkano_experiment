@@ -74,20 +74,20 @@ vec2 poissonDisk[4] = vec2[](
   vec2( 0.34495938, 0.29387760 )
 );
 
-float spread = 700.0;
-#define SHADOW_POISSON
+float spread = 400.0;
+//#define SHADOW_POISSON
 
 float sampleShadow(vec4 shadow_coord, float bias) {
     shadow_coord.xy /= shadow_coord.w;
-// Sence its a cone, clamp circle on `uvs`
+// Sense its a cone, clamp circle on `uvs`
     vec2 shadow_space_uv = shadow_coord.xy * 2 - vec2(1.0, 1.0);
     if (length(shadow_space_uv) >= 1.0) return 0.0;
 // Only shadow_coord.xy was devided by w, use w to divide z with bias attached
 // To account for perspective projection, use shadow_coord
     float shade = 1.0;
 #ifdef SHADOW_POISSON
-    for (int i=0;i<4;i++){
-        if (texture(u_shadow, shadow_coord.xy + poissonDisk[i]/spread).r < (shadow_coord.z - bias) / shadow_coord.w) shade -= 0.2;
+    for (int i = 0; i < 4; i++) {
+        if (texture(u_shadow, shadow_coord.xy + poissonDisk[i]/spread).r < (shadow_coord.z - bias) / shadow_coord.w) shade -= 0.25;
     }
 #else
     if (texture(u_shadow, shadow_coord.xy).r < (shadow_coord.z - bias) / shadow_coord.w) shade = 0.0;
@@ -101,7 +101,7 @@ void main() {
 
     vec4 world = push.to_world * vec4(v_screen_coords, depth, 1.0);
     world /= world.w;
-    vec3 normal = normalize(-subpassLoad(u_normal).xyz);
+    vec3 normal = normalize(subpassLoad(u_normal).xyz);
     vec3 col = subpassLoad(u_diffuse).rgb;
 
 // Do simple point light lighting sence shadow map will clamp not needed lighting
@@ -171,11 +171,11 @@ impl ShadedConeLight {
 
 
         let sampler = Sampler::new(queue.device().clone(),
-            Filter::Linear, Filter::Linear, MipmapMode::Linear,
+            Filter::Linear, Filter::Linear, MipmapMode::Nearest,
             SamplerAddressMode::ClampToEdge,
             SamplerAddressMode::ClampToEdge,
             SamplerAddressMode::ClampToEdge,
-            0.0, 1.0, 0.0, 0.0,
+            0.0, 2.0, 0.0, 1.0,
         ).unwrap();
 
         Self {

@@ -104,15 +104,17 @@ impl <'f> Renderer2DCall<'f> {
         self.base.ibo_data.append(&mut data);
     }
 
-    /// End current draw call
-    pub fn end_pass(self) { self.base.flush(self.tex_set); }
+    /// End current draw call, just drop value and `impl Drop` will actually commit changes
+    pub fn end_call(self) {}
 
-    /// End pass and rendering into output_image
-    pub fn end_rendering(self, future: Box<dyn GpuFuture>) -> Box<dyn GpuFuture> {
-        self.base.flush(self.tex_set);
-        self.base.end(future)
+}
+/// Commit pass then dropped, `Render2DCall::end_call` will just drop ref and expect
+/// drop to do all the stuff
+impl <'f> Drop for Renderer2DCall<'f> {
+    fn drop(&mut self) {
+        println!("Flush R2DCall");
+        self.base.flush(self.tex_set.clone());
     }
-
 }
 
 /// Base 2D renderer, manages renderpasses, pipelines
@@ -125,6 +127,7 @@ pub struct Renderer2D {
 
     vbo: Arc<dyn BufferAccess + Send + Sync>,
 
+    ibo_start: usize,
     ibo_data: Vec<ScreenInstance>,
     ibo: Arc<CpuAccessibleBuffer<[ScreenInstance]>>,
 
@@ -137,7 +140,7 @@ pub struct Renderer2D {
 }
 impl Renderer2D {
     pub fn new(queue: Arc<Queue>, output_format: Format, capacity: usize) -> Self {
-        assert!(capacity >= 1000, "Recommended capacity at least 1000 instances");
+//        assert!(capacity >= 1000, "Recommended capacity at least 1000 instances");
         let default_capacity = capacity;
 
         let render_pass = Arc::new(vulkano::ordered_passes_renderpass!(queue.device().clone(),
@@ -179,13 +182,13 @@ impl Renderer2D {
 
         let vbo = {
             let (a, b) = ImmutableBuffer::from_iter(vec![
-                ScreenVertex::with_pos(-0.5, -0.5).uv(0.0, 0.0).uni_color(1.0, 1.0),
-                ScreenVertex::with_pos( 0.5, -0.5).uv(1.0, 0.0).uni_color(1.0, 1.0),
-                ScreenVertex::with_pos(-0.5,  0.5).uv(0.0, 1.0).uni_color(1.0, 1.0),
+                ScreenVertex::with_pos(-0.5, -0.5).uv(0.0, 1.0).uni_color(1.0, 1.0),
+                ScreenVertex::with_pos( 0.5, -0.5).uv(1.0, 1.0).uni_color(1.0, 1.0),
+                ScreenVertex::with_pos(-0.5,  0.5).uv(0.0, 0.0).uni_color(1.0, 1.0),
 
-                ScreenVertex::with_pos( 0.5, -0.5).uv(1.0, 0.0).uni_color(1.0, 1.0),
-                ScreenVertex::with_pos(-0.5,  0.5).uv(0.0, 1.0).uni_color(1.0, 1.0),
-                ScreenVertex::with_pos( 0.5,  0.5).uv(1.0, 1.0).uni_color(1.0, 1.0),
+                ScreenVertex::with_pos( 0.5, -0.5).uv(1.0, 1.0).uni_color(1.0, 1.0),
+                ScreenVertex::with_pos(-0.5,  0.5).uv(0.0, 0.0).uni_color(1.0, 1.0),
+                ScreenVertex::with_pos( 0.5,  0.5).uv(1.0, 0.0).uni_color(1.0, 1.0),
             ].iter().cloned(), BufferUsage::vertex_buffer(), queue.clone()).unwrap();
             b.flush().unwrap();
             a
@@ -205,6 +208,7 @@ impl Renderer2D {
             viewport_mat: Matrix4::identity(),
 
             vbo,
+            ibo_start: 0,
             ibo_data: Vec::with_capacity(default_capacity),
             ibo,
 
@@ -212,8 +216,11 @@ impl Renderer2D {
         }
     }
 
+    /// Set ortho-window viewport
+    /// LeftTop: [0.0, 0.0]
+    /// RightBottom: [w, h]
     pub fn set_viewport_window(&mut self, w: f32, h: f32) {
-        self.viewport_mat = cgmath::ortho(0.0, w, 0.0, h, -1.0, 1.0);
+        self.viewport_mat = cgmath::ortho(w, 0.0, h, 0.0, -1.0, 1.0);
     }
 
     /// for parallel, instanced drawing
@@ -231,11 +238,11 @@ impl Renderer2D {
     /// Begin rendering into output_image
     pub fn begin<I>(&mut self, output_image: I)
         where
-            I: ImageAccess + ImageViewAccess + Clone + Send + Sync + 'static,
+            I: ImageViewAccess + Clone + Send + Sync + 'static,
     {
         assert!(self.cbb.is_none(), "Renderer already started");
 
-        let img_dim = ImageAccess::dimensions(&output_image).width_height();
+        let img_dim = ImageViewAccess::dimensions(&output_image).width_height();
         self.dyn_state.viewports = Some(vec![Viewport {
             origin: [0.0, 0.0],
             dimensions: [img_dim[0] as _, img_dim[1] as _],
@@ -247,6 +254,7 @@ impl Renderer2D {
             .build().unwrap()
         );
 
+        self.ibo_start = 0;
         self.ibo_data.clear();
         self.cbb = Some(
             AutoCommandBufferBuilder::primary_one_time_submit(self.queue.device().clone(), self.queue.family()).unwrap()
@@ -294,11 +302,15 @@ impl Renderer2D {
             {
                 let mut writer = self.ibo.write().unwrap();
                 for i in 0 .. self.ibo_data.len() {
-                    writer[i] = self.ibo_data[i];
+                    writer[i + self.ibo_start] = self.ibo_data[i];
                 }
             }
 
-            let slice = BufferSlice::from_typed_buffer_access(self.ibo.clone()).slice(0 .. self.ibo_data.len()).unwrap();
+            let slice = BufferSlice::from_typed_buffer_access(self.ibo.clone())
+                .slice(self.ibo_start .. self.ibo_start+self.ibo_data.len())
+                .unwrap();
+            self.ibo_start += self.ibo_data.len();
+
             cbb = cbb.draw(self.pipeline.clone(), &self.dyn_state,
                            vec![self.vbo.clone(), Arc::new(slice)],
                            (texture), (vs::ty::PushData {
@@ -311,7 +323,7 @@ impl Renderer2D {
     }
 
     /// End rendering into output_image
-    pub fn end(&mut self, prev_future: Box<dyn GpuFuture>) -> Box<dyn GpuFuture> {
+    pub fn end(&mut self, prev_future: Box<dyn GpuFuture + Send + Sync>) -> Box<dyn GpuFuture + Send + Sync> {
         assert!(self.cbb.is_some(), "First need to begin renderer");
 
         let cb = self.cbb.take().unwrap()
