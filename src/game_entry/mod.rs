@@ -1,7 +1,4 @@
 
-use crate::main_processor::{
-    GameListener, Frame, FrameRequest
-};
 use winit::VirtualKeyCode as Keys;
 use cgmath::{Matrix4, SquareMatrix, vec3};
 use std::{
@@ -10,7 +7,10 @@ use std::{
     sync::Arc,
     path::Path,
 };
-use crate::{
+use gfx_lib::{
+    main_processor::{
+        GameListener, Frame, FrameRequest
+    },
     graphics::{
         Camera,
         image::{
@@ -35,14 +35,13 @@ use crate::{
     },
     sync::{ Loader, LoaderError },
 };
-use vulkano::{
-    image::{ ImageAccess, AttachmentImage, ImageUsage },
-    sampler::{ Sampler, Filter, MipmapMode, SamplerAddressMode },
-    buffer::BufferAccess,
-    format::Format,
-    sync::GpuFuture
-};
 use std::ops::Deref;
+
+use vulkano::{
+    format::Format,
+    sync::GpuFuture,
+};
+use vulkano::image::ImageAccess;
 
 mod ui_2d_pass;
 
@@ -53,7 +52,6 @@ pub struct GameEntry {
 
     pass_2d: ui_2d_pass::UI2DPass,
 
-    transient_image: Arc<AttachmentImage>,
     renderer_2d: Renderer2D,
     renderer_3d: Renderer3D,
 
@@ -108,7 +106,6 @@ impl GameEntry {
 
         // Transient image between renders and bake
 //        ImageContent::load_image()
-        let transient_image = AttachmentImage::new(init_frame.queue.device().clone(), [1, 1], Format::R8G8B8A8Snorm).unwrap();
 
         let mut renderer_2d = Renderer2D::new(init_frame.queue.clone(), Format::R8G8B8A8Snorm, 1000);
         let mut renderer_3d = Renderer3D::new(init_frame.queue.clone(), init_frame.image.format());
@@ -135,6 +132,7 @@ impl GameEntry {
             let light_intensity = 0.2; // 1.0 / light_count as f32;
             let res_sq = 1024;
             let light_res = [res_sq, res_sq];
+
             for i in 0..light_count {
                 let x = (i as f32 / light_count as f32 * 3.1415 * 2.0).sin() * 5.0;
                 let y = (i as f32 / light_count as f32 * 3.1415 * 2.0).cos() * 5.0;
@@ -171,7 +169,7 @@ impl GameEntry {
             });
             floor_obj.set_pos(0.0, -2.0, 0.0);
 
-            let mut object_data = crate::loader::obj::load_objects(
+            let mut object_data = gfx_lib::loader::obj::load_objects(
                 &Path::new("src/data/test.obj"),
                 vec!["Plane"]
             ).unwrap();
@@ -201,10 +199,8 @@ impl GameEntry {
 
             pass_2d,
 
-            transient_image,
             renderer_2d,
             renderer_3d,
-
 
             time: 0.0,
             speed_mod: 0.0,
@@ -224,7 +220,6 @@ impl GameListener for GameEntry {
             cgmath::Deg(60.0), width as f32 / height as f32, 0.1, 100.0
         ));
 
-        self.transient_image = AttachmentImage::new(frame.queue.device().clone(), [width, height], Format::R8G8B8A8Snorm).unwrap();
 //        let aspect = width as f32 / height as f32;
         self.renderer_2d.set_viewport_window(1.0, 1.0);
     }

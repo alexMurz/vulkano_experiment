@@ -26,7 +26,6 @@ use vulkano::{
 
 use cgmath::{Matrix4, SquareMatrix, vec3};
 use vulkano::buffer::BufferSlice;
-use blend::parsers::blend::Block::Rend;
 
 pub mod cache;
 

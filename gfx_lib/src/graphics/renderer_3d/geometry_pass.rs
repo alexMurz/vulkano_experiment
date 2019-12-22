@@ -382,6 +382,7 @@ impl GeometryPass {
         self.tex_pass.set_view_projection(vp);
     }
 
+    //noinspection RsMatchCheck
     pub fn render<'f>(&mut self, dyn_state: &DynamicState, geometry: &mut Vec<ObjectInstance>) -> AutoCommandBuffer {
 
         let mut cbb = AutoCommandBufferBuilder::secondary_graphics(
@@ -394,6 +395,7 @@ impl GeometryPass {
         for i in geometry.iter_mut().filter(|x| x.mesh_data.ready_for_use() && x.mesh_data.visible_in(vp * x.model_matrix())) {
             let matrices = (i.model_matrix(), i.normal_matrix());
             for m in i.materials.iter_mut() {
+
                 match m.material.mode() {
                     MaterialDrawMode::NoTexture => cbb = self.flat_pass.render(dyn_state, cbb, matrices, m),
                     MaterialDrawMode::WithDiffuse => cbb = self.tex_pass.render(dyn_state, cbb, matrices, m),

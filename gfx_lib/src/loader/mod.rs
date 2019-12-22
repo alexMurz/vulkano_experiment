@@ -1,6 +1,5 @@
 use std::ops::Range;
 
-pub mod blender;
 pub mod obj;
 
 /// Contain meta information about material,

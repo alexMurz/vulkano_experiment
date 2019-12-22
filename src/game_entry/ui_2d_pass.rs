@@ -5,7 +5,7 @@ use std::{
     iter::Iterator,
     sync::Arc,
 };
-use crate::{
+use gfx_lib::{
     main_processor::Frame,
     graphics::{
         image::{
