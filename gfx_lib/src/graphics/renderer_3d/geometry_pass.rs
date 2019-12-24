@@ -18,7 +18,7 @@ use vulkano::{
 };
 use cgmath::{ Matrix4, SquareMatrix };
 use crate::graphics::renderer_3d::mesh::{
-    Vertex3D, MeshAccess, MaterialMeshSlice, MeshData, MaterialData, ObjectInstance, MaterialDrawMode
+    Vertex3D, MeshAccess, MaterialMeshSlice, MaterialData, ObjectInstance, MaterialDrawMode
 };
 
 
@@ -68,7 +68,7 @@ pub mod flat_fs {
 #version 450
 
 layout(location = 0) out vec4 f_color;
-layout(location = 1) out vec3 f_normal;
+//layout(location = 1) out vec3 f_normal;
 
 layout(location = 0) in vec3 v_color;
 layout(location = 1) in vec3 v_norm;
@@ -77,21 +77,22 @@ layout(location = 3) in vec2 v_uv;
 
 layout(set = 1, binding = 0) uniform Material {
     vec3 diffuse;
+    float alpha;
     vec2 uv_remap_a;
     vec2 uv_remap_b;
     int flat_shading;
 } material;
 
 void main() {
-    vec3 faceNormal;
-    if (material.flat_shading > 0) {
-        vec3 tangent = dFdx( v_pos );
-        vec3 bitangent = dFdy( v_pos );
-        faceNormal = normalize( -cross( tangent, bitangent ) );
-    } else faceNormal = v_norm;
+//    vec3 faceNormal;
+//    if (material.flat_shading > 0) {
+//        vec3 tangent = dFdx( v_pos );
+//        vec3 bitangent = dFdy( v_pos );
+//        faceNormal = normalize( -cross( tangent, bitangent ) );
+//    } else faceNormal = v_norm;
+//    f_normal = faceNormal;
 
-    f_color = vec4(v_color * material.diffuse, 1.0);
-    f_normal = faceNormal;
+    f_color = vec4(v_color * material.diffuse, material.alpha);
 }"
     }
 }
@@ -102,7 +103,7 @@ mod tex_fs {
 #version 450
 
 layout(location = 0) out vec4 f_color;
-layout(location = 1) out vec3 f_normal;
+//layout(location = 1) out vec3 f_normal;
 
 layout(location = 0) in vec3 v_color;
 layout(location = 1) in vec3 v_norm;
@@ -111,6 +112,7 @@ layout(location = 3) in vec2 v_uv;
 
 layout(set = 1, binding = 0) uniform Material {
     vec3 diffuse;
+    float alpha;
     vec2 uv_remap_a;
     vec2 uv_remap_b;
     int flat_shading;
@@ -118,21 +120,174 @@ layout(set = 1, binding = 0) uniform Material {
 layout(set = 1, binding = 1) uniform sampler2D u_texture;
 
 void main() {
-    vec3 faceNormal;
-    if (material.flat_shading > 0) {
-        vec3 tangent = dFdx( v_pos );
-        vec3 bitangent = dFdy( v_pos );
-        faceNormal = normalize( -cross( tangent, bitangent ) );
-    } else faceNormal = v_norm;
+//    vec3 faceNormal;
+//    if (material.flat_shading > 0) {
+//        vec3 tangent = dFdx( v_pos );
+//        vec3 bitangent = dFdy( v_pos );
+//        faceNormal = normalize( -cross( tangent, bitangent ) );
+//    } else faceNormal = v_norm;
+//    f_normal = faceNormal;
 
     vec2 uv = material.uv_remap_a + v_uv * (material.uv_remap_b - material.uv_remap_a);
     vec3 col = texture(u_texture, uv).rgb * material.diffuse * v_color;
-    f_color = vec4(col, 1.0);
-    f_normal = faceNormal;
+    f_color = vec4(col, material.alpha);
 }"
     }
 }
 
+mod depth_vs {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        src: "
+#version 450
+
+layout(location = 0) in vec3 position;
+layout(location = 2) in vec3 normal;
+
+layout(location = 0) out vec3 v_norm;
+
+layout(push_constant) uniform PushData {
+    mat4 model;
+    mat4 normal;
+} push;
+
+layout(set = 0, binding = 0) uniform Matrixes {
+    mat4 vp;
+} mat;
+
+void main() {
+    v_norm = mat3(push.normal) * normal;
+    gl_Position = mat.vp * vec4((push.model * vec4(position, 1.0)).xyz, 1.0);
+}"
+    }
+}
+pub mod depth_fs {
+    vulkano_shaders::shader!{
+        ty: "fragment",
+        src: "
+#version 450
+
+layout(location = 0) out vec3 f_normal;
+
+layout(location = 0) in vec3 v_norm;
+
+void main() {
+    vec3 faceNormal = v_norm;
+//    if (material.flat_shading > 0) {
+//        vec3 tangent = dFdx( v_pos );
+//        vec3 bitangent = dFdy( v_pos );
+//        faceNormal = normalize( -cross( tangent, bitangent ) );
+//    } else faceNormal = v_norm;
+    f_normal = faceNormal;
+
+}"
+    }
+}
+
+/// Depth bake for `ShadowMapping`
+pub struct DepthPass {
+    queue: Arc<Queue>,
+    pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
+
+    // Matrix info (used to update)
+    pub view_projection: Matrix4<f32>,
+
+    // Matrixes Uniform
+    uniform_dirty: bool, // True then uniform requires update
+    uniform_mat_set: Arc<dyn DescriptorSet + Send + Sync>, // desc set
+    uniform_matrixes_buffer: Arc<CpuAccessibleBuffer<depth_vs::ty::Matrixes>>, // Buffer with `matrixes`
+}
+impl DepthPass {
+    pub fn new<R>(queue: Arc<Queue>, subpass: Subpass<R>) -> Self
+        where R: RenderPassAbstract + Send + Sync + 'static
+    {
+        let pipeline = {
+            let vs = depth_vs::Shader::load(queue.device().clone())
+                .expect("failed to create shader module");
+            let fs = depth_fs::Shader::load(queue.device().clone())
+                .expect("failed to create shader module");
+
+            Arc::new(GraphicsPipeline::start()
+                .vertex_input(SingleBufferDefinition::<Vertex3D>::new())
+                .vertex_shader(vs.main_entry_point(), ())
+                .triangle_list()
+                .viewports_dynamic_scissors_irrelevant(1)
+                .fragment_shader(fs.main_entry_point(), ())
+                .depth_stencil_simple_depth()
+                .front_face_counter_clockwise() // Due to flipped Y coordinate, also change vertex order to CW
+                .cull_mode_back()
+                .render_pass(subpass)
+                .build(queue.device().clone())
+                .unwrap()) as Arc<dyn GraphicsPipelineAbstract + Send + Sync>
+        };
+
+        let uniform_matrixes_buffer = {
+            CpuAccessibleBuffer::from_data(
+                queue.device().clone(), BufferUsage::uniform_buffer(),
+                depth_vs::ty::Matrixes {
+                    vp: Matrix4::identity().into()
+                }
+            ).unwrap()
+        };
+
+        let uniform_set = Arc::new(
+            PersistentDescriptorSet::start(pipeline.clone(), 0)
+                .add_buffer(uniform_matrixes_buffer.clone()).unwrap()
+                .build().unwrap()
+        );
+
+        Self {
+            queue,
+            pipeline,
+
+            view_projection: Matrix4::identity(),
+
+            uniform_dirty: true,
+            uniform_mat_set: uniform_set,
+            uniform_matrixes_buffer
+        }
+    }
+
+    pub fn set_view_projection(&mut self, vp: Matrix4<f32>) {
+        if !self.view_projection.eq(&vp) {
+            self.uniform_dirty = true;
+            self.view_projection = vp;
+        }
+    }
+
+    pub fn render<'f>(&mut self, dyn_state: &DynamicState, mut cbb: AutoCommandBufferBuilder, matrices: (Matrix4<f32>, Matrix4<f32>), mat: &mut MaterialMeshSlice) -> AutoCommandBufferBuilder {
+        if self.uniform_dirty {
+            self.uniform_dirty = false;
+            let mut writer = self.uniform_matrixes_buffer.write().unwrap();
+            writer.vp = self.view_projection.into();
+        }
+
+        let push = vs::ty::PushData {
+            model: matrices.0.into(),
+            normal: matrices.1.into(),
+        };
+
+        if mat.ibo_slice.is_some() {
+            cbb.draw_indexed(
+                self.pipeline.clone(), dyn_state,
+                vec![mat.vbo_slice.clone()],
+                mat.ibo_slice.clone().unwrap(),
+                (self.uniform_mat_set.clone()),
+                (push)
+            ).unwrap()
+        } else {
+            cbb.draw(
+                self.pipeline.clone(), dyn_state,
+                vec![mat.vbo_slice.clone()],
+                (self.uniform_mat_set.clone()),
+                (push)
+            ).unwrap()
+        }
+    }
+
+}
+
+/// Material bake for `NoTexture`
 pub struct FlatPass {
     queue: Arc<Queue>,
     pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
@@ -161,6 +316,7 @@ impl FlatPass {
                 .triangle_list()
                 .viewports_dynamic_scissors_irrelevant(1)
                 .fragment_shader(fs.main_entry_point(), ())
+//                .blend_alpha_blending()
                 .depth_stencil_simple_depth()
                 .front_face_counter_clockwise() // Due to flipped Y coordinate, also change vertex order to CW
                 .cull_mode_back()
@@ -235,6 +391,7 @@ impl FlatPass {
 
 }
 
+/// Material bake for `WithTexture`
 pub struct TexPass {
     queue: Arc<Queue>,
     pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
@@ -267,6 +424,7 @@ impl TexPass {
                 .viewports_dynamic_scissors_irrelevant(1)
                 .fragment_shader(fs.main_entry_point(), ())
                 .depth_stencil_simple_depth()
+                .blend_alpha_blending()
                 .front_face_counter_clockwise() // Due to flipped Y coordinate, also change vertex order to CW
                 .cull_mode_back()
                 .render_pass(subpass)
@@ -345,11 +503,6 @@ impl TexPass {
                 (push)
             ).unwrap()
         }
-//        cbb.draw(self.pipeline.clone(), dyn_state,
-//                 vec![mat.vbo_slice.clone()],
-//                 (self.uniform_mat_set.clone(), mat.material.get_uniform(&self.pipeline, 1)),
-//                 (push))
-//            .unwrap()
     }
 
 }
@@ -357,20 +510,24 @@ impl TexPass {
 pub struct GeometryPass {
     queue: Arc<Queue>,
     view_projection: Matrix4<f32>,
+
+    depth_pass: DepthPass,
     flat_pass: FlatPass,
     tex_pass: TexPass,
 }
 impl GeometryPass {
-    pub fn new<R>(queue: Arc<Queue>, subpass: Subpass<R>) -> Self
+    pub fn new<R>(queue: Arc<Queue>, depth_subpass: Subpass<R>, mat_subpass: Subpass<R>) -> Self
         where R: RenderPassAbstract + Send + Sync + Clone + 'static
     {
-        let flat_pass = FlatPass::new(queue.clone(), subpass.clone());
-        let tex_pass = TexPass::new(queue.clone(), subpass.clone());
+        let depth_pass = DepthPass::new(queue.clone(), depth_subpass);
+        let flat_pass = FlatPass::new(queue.clone(), mat_subpass.clone());
+        let tex_pass = TexPass::new(queue.clone(), mat_subpass.clone());
 
         Self {
             queue,
             view_projection: Matrix4::identity(),
 
+            depth_pass,
             flat_pass,
             tex_pass
         }
@@ -378,24 +535,35 @@ impl GeometryPass {
 
     pub fn set_view_projection(&mut self, vp: Matrix4<f32>) {
         self.view_projection = vp;
+        self.depth_pass.set_view_projection(vp);
         self.flat_pass.set_view_projection(vp);
         self.tex_pass.set_view_projection(vp);
     }
 
-    //noinspection RsMatchCheck
-    pub fn render<'f>(&mut self, dyn_state: &DynamicState, geometry: &mut Vec<ObjectInstance>) -> AutoCommandBuffer {
-
-        let mut cbb = AutoCommandBufferBuilder::secondary_graphics(
-            self.queue.device().clone(),
-            self.queue.family(),
-            self.flat_pass.pipeline.clone().subpass()
-        ).unwrap();
+    /// Bake depth and normal, using rules of receive shadows or not
+    pub fn bake_depth_normal<'f>(&mut self, mut cbb: AutoCommandBufferBuilder, dyn_state: &DynamicState, geometry: &mut Vec<ObjectInstance>) -> AutoCommandBufferBuilder {
 
         let vp = self.view_projection;
         for i in geometry.iter_mut().filter(|x| x.mesh_data.ready_for_use() && x.mesh_data.visible_in(vp * x.model_matrix())) {
             let matrices = (i.model_matrix(), i.normal_matrix());
             for m in i.materials.iter_mut() {
+                if m.material.is_cast_shadow() {
+                    cbb = self.depth_pass.render(dyn_state, cbb, matrices, m);
+                }
+            }
+        }
 
+        cbb
+    }
+
+    //noinspection RsMatchCheck
+    /// Bake material data into <diffuse and normal buffers>
+    pub fn bake_materials<'f>(&mut self, mut cbb: AutoCommandBufferBuilder, dyn_state: &DynamicState, geometry: &mut Vec<ObjectInstance>) -> AutoCommandBufferBuilder {
+
+        let vp = self.view_projection;
+        for i in geometry.iter_mut().filter(|x| x.mesh_data.ready_for_use() && x.mesh_data.visible_in(vp * x.model_matrix())) {
+            let matrices = (i.model_matrix(), i.normal_matrix());
+            for m in i.materials.iter_mut() {
                 match m.material.mode() {
                     MaterialDrawMode::NoTexture => cbb = self.flat_pass.render(dyn_state, cbb, matrices, m),
                     MaterialDrawMode::WithDiffuse => cbb = self.tex_pass.render(dyn_state, cbb, matrices, m),
@@ -404,7 +572,9 @@ impl GeometryPass {
             }
         }
 
-        cbb.build().unwrap()
+        cbb
     }
 
 }
+
+

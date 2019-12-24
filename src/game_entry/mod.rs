@@ -25,7 +25,7 @@ use gfx_lib::{
         },
         renderer_3d::{
             lighting_system::{ LightSource, LightKind, ShadowKind },
-            mesh::{ Vertex3D, MeshAccess, MaterialMeshSlice, MeshData, MaterialData, ObjectInstance },
+            mesh::{Vertex3D, MeshAccess, MaterialMeshSlice, MaterialData, ObjectInstance },
             Renderer3D,
         },
         renderer_2d::Renderer2D,
@@ -61,32 +61,9 @@ pub struct GameEntry {
 }
 impl GameEntry {
     pub fn new(init_frame: &mut Frame) -> Self {
-//        let image2 = ImageContent::new_with_bytes(
-//            init_frame.queue.clone(),
-//            init_frame.sampler_pool.with_params(SamplerParams::simple_repeat()),
-//            Cursor::new(include_bytes!("../data/icon128.png").to_vec()),
-//            Format::R8G8B8A8Srgb,
-//        );
-//        let image1 = ImageContent::new_with_bytes(
-//            init_frame.queue.clone(),
-//            init_frame.sampler_pool.with_params(SamplerParams::simple_repeat()),
-//            Cursor::new(include_bytes!("../data/icon512.png").to_vec()),
-//            Format::R8G8B8A8Srgb,
-//        );
 
         // 2D UI Pass
         let mut pass_2d = ui_2d_pass::UI2DPass::new(init_frame);
-
-        // Wait on image before use
-//        image1.flush();
-//        image2.flush();
-
-        // Atlas Image
-//        let am = ImageContent::load_image(
-//            init_frame.queue.clone(),
-//            Cursor::new(include_bytes!("../data/icon512.png").to_vec()),
-//            Format::R8G8B8A8Srgb,
-//        );
 
         // Atlas Test
         let img_bytes = include_bytes!("../data/icon512.png").to_vec();
@@ -128,28 +105,38 @@ impl GameEntry {
                 source.borrow_mut().dist(20.0);
             }
 
-            let light_count = 5;
-            let light_intensity = 0.2; // 1.0 / light_count as f32;
             let res_sq = 1024;
             let light_res = [res_sq, res_sq];
-
-            for i in 0..light_count {
-                let x = (i as f32 / light_count as f32 * 3.1415 * 2.0).sin() * 5.0;
-                let y = (i as f32 / light_count as f32 * 3.1415 * 2.0).cos() * 5.0;
+            /* Shadow Light */ {
                 let mut source = renderer_3d.create_light_source(LightKind::ConeWithShadow(
                     ShadowKind::Cone::with_projection(90.0, light_res)
                 ));
-                source.borrow_mut().pos(x, 5.0, y);
+                source.borrow_mut().pos(1.0, 5.0, 5.0);
                 source.borrow_mut().look_at(0.0, 0.0, 0.0);
-                source.borrow_mut().int(light_intensity);
+                source.borrow_mut().int(1.0);
                 source.borrow_mut().dist(20.0);
             }
+
+//            let light_count = 5;
+//            let light_intensity = 0.2; // 1.0 / light_count as f32;
+//
+//            for i in 0..light_count {
+//                let x = (i as f32 / light_count as f32 * 3.1415 * 2.0).sin() * 5.0;
+//                let y = (i as f32 / light_count as f32 * 3.1415 * 2.0).cos() * 5.0;
+//                let mut source = renderer_3d.create_light_source(LightKind::ConeWithShadow(
+//                    ShadowKind::Cone::with_projection(90.0, light_res)
+//                ));
+//                source.borrow_mut().pos(x, 5.0, y);
+//                source.borrow_mut().look_at(0.0, 0.0, 0.0);
+//                source.borrow_mut().int(light_intensity);
+//                source.borrow_mut().dist(20.0);
+//            }
         }
 
         // Create objects
         let mut geom = {
 
-            let floor_size = 5.0;
+            let floor_size = 10.0;
             let floor_mesh = renderer_3d.generate_mesh_from_data(vec![
                 Vertex3D::from_position(-floor_size, 0.0,-floor_size).uv(0.0, 0.0).normal(0.0, 1.0, 0.0),
                 Vertex3D::from_position(-floor_size, 0.0, floor_size).uv(0.0, 1.0).normal(0.0, 1.0, 0.0),
@@ -176,11 +163,6 @@ impl GameEntry {
 
             let mut obj1 = renderer_3d.generate_object(
                 object_data.remove("Plane").unwrap(),
-//                DirectoryImageResolver::new(
-//                    Path::new("src/data"),
-//                    init_frame.queue.clone(),
-//                    init_frame.sampler_pool.with_params(SamplerParams::simple_repeat())
-//                ).unwrap()
                 AtlasImageResolver::new(&atlas)
             ).unwrap();
 

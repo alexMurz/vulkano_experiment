@@ -28,11 +28,14 @@ use crate::sync::{ Loader, LoaderError };
 use mesh::{
     Vertex3D, MeshAccess,
     MaterialMeshSlice,
-    MeshData,
     MaterialData, ObjectInstance,
 };
 use crate::graphics::image::atlas::{TextureRegion, ImageResolver};
 use crate::graphics::renderer_3d::post_processing::bake_image::PostBakeImage;
+use crate::graphics::renderer_3d::mesh::ImmutableMeshData;
+
+const DIFFUSE_FORMAT: Format = Format::A2B10G10R10UnormPack32;
+const DEPTH_FORMAT: Format = Format::D16Unorm;
 
 pub struct Renderer3D {
     // Geometry to draw
@@ -44,27 +47,28 @@ pub struct Renderer3D {
     dyn_state: DynamicState,
 
     // FB Attachments,
-    transient_buffer: Arc<AttachmentImage>,
     diffuse_buffer: Arc<AttachmentImage>,
     normal_buffer: Arc<AttachmentImage>,
+    transient_depth_buffer: Arc<AttachmentImage>,
     depth_buffer: Arc<AttachmentImage>,
 
     // Passes
     geom_pass: GeometryPass,
     lighting_pass: LightingPass,
-    bake_pass: PostBakeImage,
 }
 /// Comms with game_listener
 impl Renderer3D {
 
     pub fn generate_mesh_from_data(&self, data: Vec<Vertex3D>, indices: Option<Vec<u32>>) -> Loader<Arc<dyn MeshAccess + Send + Sync + 'static>> {
-        MeshData::from_data_later(self.queue.clone(), data, indices).into()
+        ImmutableMeshData::from_data(self.queue.clone(), data, indices).into()
     }
 
     pub fn generate_object(&self, mut object: ObjectInfo, mut image_resolver: Box<dyn ImageResolver + Send + 'static>) -> Loader<ObjectInstance> {
 
         fn generate_material(material: &MaterialInfo, resolver: &mut Box<dyn ImageResolver + Send + 'static>) -> MaterialData {
             let mut data = MaterialData::new();
+            data.set_alpha(material.dissolve);
+            data.set_cast_shadow(material.cast_shadow);
             if material.diffuse_tex.is_some() {
                 data.set_diffuse_region(resolver.get(
                     MaterialImageUsage::Diffuse,
@@ -144,18 +148,11 @@ impl Renderer3D {
                     format: output_format,
                     samples: 1,
                 },
-                // Transient color attachment
-                transient: {
-                    load: Clear,
-                    store: DontCare,
-                    format: Format::R8G8B8A8Snorm,
-                    samples: 1,
-                },
                 // Will be bound to `self.diffuse_buffer`.
                 diffuse: {
                     load: Clear,
                     store: DontCare,
-                    format: Format::A2B10G10R10UnormPack32,
+                    format: DIFFUSE_FORMAT,
                     samples: 1,
                 },
                 // Will be bound to `self.normals_buffer`.
@@ -165,31 +162,40 @@ impl Renderer3D {
                     format: Format::R16G16B16A16Sfloat,
                     samples: 1,
                 },
+                // Depth used for geometry pass
+                transient_depth: {
+                    load: Clear,
+                    store: DontCare,
+                    format: DEPTH_FORMAT,
+                    samples: 1,
+                },
+                // Buffered depth
                 depth: {
                     load: Clear,
                     store: DontCare,
-                    format: Format::D16Unorm,
+                    format: DEPTH_FORMAT,
                     samples: 1,
                 }
             },
             passes: [
                 // Write to the diffuse, normals and depth attachments.
                 {
-                    color: [ diffuse, normals ],
+                    color: [ diffuse ],
+                    depth_stencil: { transient_depth },
+                    input: []
+                },
+                // Write depth again, for shadow mapping
+                {
+                    color: [ normals ],
                     depth_stencil: { depth },
                     input: []
                 },
+
                 // Apply lighting by reading these three attachments and writing to `final_color`.
-                {
-                    color: [ transient ],
-                    depth_stencil: {},
-                    input: [ diffuse, normals, depth ]
-                },
-                // Trying to do post processor
                 {
                     color: [ final_color ],
                     depth_stencil: {},
-                    input: [ transient ]
+                    input: [ diffuse, normals, depth ]
                 }
             ]
         ).unwrap()) as Arc<dyn RenderPassAbstract + Send + Sync>;
@@ -199,29 +205,27 @@ impl Renderer3D {
             input_attachment: true,
             ..ImageUsage::none()
         };
-        let transient_buffer = AttachmentImage::with_usage(
-            queue.device().clone(), [1, 1], Format::R8G8B8A8Snorm, atch_usage
-        ).unwrap();
+
         let diffuse_buffer = AttachmentImage::with_usage(
-            queue.device().clone(), [1, 1], Format::A2B10G10R10UnormPack32, atch_usage
+            queue.device().clone(), [1, 1], DIFFUSE_FORMAT, atch_usage
         ).unwrap();
         let normal_buffer = AttachmentImage::with_usage(
             queue.device().clone(), [1, 1], Format::R16G16B16A16Sfloat, atch_usage
         ).unwrap();
+        let transient_depth_buffer = AttachmentImage::with_usage(
+            queue.device().clone(), [1, 1], DEPTH_FORMAT, atch_usage
+        ).unwrap();
         let depth_buffer = AttachmentImage::with_usage(
-            queue.device().clone(), [1, 1], Format::D16Unorm, atch_usage
+            queue.device().clone(), [1, 1], DEPTH_FORMAT, atch_usage
         ).unwrap();
 
 
         let geom_pass = GeometryPass::new(
             queue.clone(),
+            Subpass::from(render_pass.clone(), 1).unwrap(),
             Subpass::from(render_pass.clone(), 0).unwrap()
         );
         let mut lighting_pass = LightingPass::new(
-            queue.clone(),
-            Subpass::from(render_pass.clone(), 1).unwrap()
-        );
-        let mut bake_pass = PostBakeImage::new(
             queue.clone(),
             Subpass::from(render_pass.clone(), 2).unwrap()
         );
@@ -234,14 +238,13 @@ impl Renderer3D {
             render_pass,
             dyn_state: DynamicState::none(),
 
-            transient_buffer,
             diffuse_buffer,
             normal_buffer,
+            transient_depth_buffer,
             depth_buffer,
 
             geom_pass,
             lighting_pass,
-            bake_pass,
         }
     }
 
@@ -260,12 +263,16 @@ impl Renderer3D {
         let img_dims = ImageAccess::dimensions(&final_image).width_height();
         if ImageAccess::dimensions(&self.depth_buffer).width_height() != img_dims {
 
-            let atch_usage = ImageUsage { transient_attachment: true, input_attachment: true, ..ImageUsage::none() };
+            let atch_usage = ImageUsage {
+                transient_attachment: true,
+                input_attachment: true,
+                ..ImageUsage::none()
+            };
 
             self.diffuse_buffer = AttachmentImage::with_usage(
                 self.queue.device().clone(),
                 img_dims,
-                Format::A2B10G10R10UnormPack32,
+                DIFFUSE_FORMAT,
                 atch_usage
             ).unwrap();
 
@@ -276,17 +283,17 @@ impl Renderer3D {
                 atch_usage
             ).unwrap();
 
-            self.depth_buffer = AttachmentImage::with_usage(
+            self.transient_depth_buffer = AttachmentImage::with_usage(
                 self.queue.device().clone(),
                 img_dims,
-                Format::D16Unorm,
+                DEPTH_FORMAT,
                 atch_usage
             ).unwrap();
 
-            self.transient_buffer = AttachmentImage::with_usage(
+            self.depth_buffer = AttachmentImage::with_usage(
                 self.queue.device().clone(),
                 img_dims,
-                Format::R8G8B8A8Snorm,
+                DEPTH_FORMAT,
                 atch_usage
             ).unwrap();
 
@@ -301,9 +308,6 @@ impl Renderer3D {
                 self.normal_buffer.clone(),
                 self.depth_buffer.clone(),
             );
-            self.bake_pass.set_attachment(
-                self.transient_buffer.clone(),
-            )
         }
 
         // Prepare shadow map
@@ -313,9 +317,9 @@ impl Renderer3D {
         let framebuffer = Arc::new(
             Framebuffer::start(self.render_pass.clone())
                 .add(final_image.clone()).unwrap()
-                .add(self.transient_buffer.clone()).unwrap()
                 .add(self.diffuse_buffer.clone()).unwrap()
                 .add(self.normal_buffer.clone()).unwrap()
+                .add(self.transient_depth_buffer.clone()).unwrap()
                 .add(self.depth_buffer.clone()).unwrap()
                 .build().unwrap()
         );
@@ -323,24 +327,24 @@ impl Renderer3D {
         let mut main_cbb = AutoCommandBufferBuilder::primary_one_time_submit(
             self.queue.device().clone(), self.queue.family()
         ).unwrap()
-            .begin_render_pass(framebuffer.clone(), true, vec![
-                [0.0, 0.0, 0.0, 1.0].into(),
+            .begin_render_pass(framebuffer.clone(), false, vec![
                 [0.0, 0.0, 0.0, 1.0].into(),
                 [0.0, 0.0, 0.0, 0.0].into(),
                 [0.0, 0.0, 0.0, 0.0].into(),
                 1.0.into(),
+                1.0.into(),
             ]).unwrap();
 
+        // Do geometry depth only
+        main_cbb = self.geom_pass.bake_materials(main_cbb, &self.dyn_state, &mut self.render_geometry);
+
         // Do geometry pass
-        main_cbb = unsafe {
-            main_cbb.execute_commands(self.geom_pass.render(&self.dyn_state, &mut self.render_geometry)).unwrap()
-        };
+        main_cbb = main_cbb.next_subpass(false).unwrap();
+        main_cbb = self.geom_pass.bake_depth_normal(main_cbb, &self.dyn_state, &mut self.render_geometry);
 
         // Do Lighting
-        main_cbb = self.lighting_pass.render(main_cbb.next_subpass(true).unwrap(), &self.dyn_state);
-
-        // Do post
-        main_cbb = self.bake_pass.render(main_cbb.next_subpass(false).unwrap(), &self.dyn_state);
+        main_cbb = main_cbb.next_subpass(true).unwrap();
+        main_cbb = self.lighting_pass.render(main_cbb, &self.dyn_state);
 
         let main_cb = main_cbb.end_render_pass().unwrap().build().unwrap();
 

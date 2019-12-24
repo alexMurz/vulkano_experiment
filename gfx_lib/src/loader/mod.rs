@@ -8,8 +8,6 @@ pub mod obj;
     // Comment provide field context for Wavefront Obj format
     // Context Ref: http://paulbourke.net/dataformats/mtl/
 
-    pub illumination_model: u32, // illum_*
-
     pub ambient_color: [f32; 3], // Ka
     pub ambient_tex: Option<String>, // map_Ka
 
@@ -30,6 +28,11 @@ pub mod obj;
 
     pub optical_density: f32, // Ni
     pub dissolve: f32, // d aka alpha
+
+    // Derivatives from illumanation model
+//    pub illumination_model: u32, // illum_*
+    pub cast_shadow: bool,
+
 }
 impl MaterialInfo {
     fn empty() -> Self {

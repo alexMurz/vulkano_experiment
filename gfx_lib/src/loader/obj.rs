@@ -52,8 +52,8 @@ pub fn load_object(models: &Vec<tobj::Model>, materials: &Vec<tobj::Material>, t
         if m.name == *target_name {
             exists = true;
             let mesh = &m.mesh;
-            let i_size = mesh.indices.len();
             let vert_len = mesh.positions.len() / 3;
+            let i_size = vert_len; // mesh.indices.len();
             for i in 0 .. vert_len {
                 let mut vertex = VertexInfo::default();
                 vertex.pos  = [ mesh.positions[i*3], mesh.positions[i*3+1], mesh.positions[i*3+2] ];
@@ -74,7 +74,13 @@ pub fn load_object(models: &Vec<tobj::Model>, materials: &Vec<tobj::Material>, t
                     let mut material = MaterialInfo::empty();
                     if m.mesh.material_id.is_some() {
                         let mat = &materials[m.mesh.material_id.unwrap()];
+                        // Alpha
                         material.dissolve = mat.dissolve;
+
+                        // Shadow test
+                        material.cast_shadow = mat.illumination_model.unwrap_or(2) != 9;
+
+                        // Diffuse color
                         if mat.diffuse_texture.is_empty() {
                             material.diffuse_color = mat.diffuse;
                         } else {

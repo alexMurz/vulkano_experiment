@@ -83,6 +83,7 @@ impl ShadowMapping {
                 .viewports_dynamic_scissors_irrelevant(1)
                 .fragment_shader(fs.main_entry_point(), ())
                 .depth_stencil_simple_depth()
+//                .blend_alpha_blending()
                 .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
                 .front_face_counter_clockwise() // Due to flipped Y coordinate, also change vertex order to CW
                 .cull_mode_front()
@@ -148,23 +149,25 @@ impl ShadowMapping {
                     depth_range: 0.0 .. 1.0
                 }]);
 
-                for i in geometry.iter() {
+                for i in geometry.iter(){
                     let mvp = cone.vp * i.model_matrix();
                     if i.mesh_data.visible_in(mvp) {
-
                         let vs_push = depth_vs::ty::PushData {
                             mvp: mvp.into()
                         };
-                        if i.mesh_data.has_ibo() {
-                            cbb = cbb.draw_indexed(self.pipeline.clone(), &self.dyn_state,
-                                     vec![i.mesh_data.get_vbo_slice()],
-                                     i.mesh_data.get_ibo(),
-                                     (), (vs_push)).unwrap();
-                        } else {
-                            cbb = cbb.draw(self.pipeline.clone(), &self.dyn_state,
-                                           vec![i.mesh_data.get_vbo_slice()],
-                                           (), (vs_push)).unwrap();
+                        for mat in i.materials.iter().filter(|x| x.material.is_cast_shadow()) {
+                            if mat.ibo_slice.is_some() {
+                                cbb = cbb.draw_indexed(self.pipeline.clone(), &self.dyn_state,
+                                                       vec![mat.vbo_slice.clone()],
+                                                       mat.ibo_slice.clone().unwrap(),
+                                                       (), (vs_push)).unwrap();
+                            } else {
+                                cbb = cbb.draw(self.pipeline.clone(), &self.dyn_state,
+                                               vec![mat.vbo_slice.clone()],
+                                               (), (vs_push)).unwrap();
+                            }
                         }
+
                     }
                 }
 

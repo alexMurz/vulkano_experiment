@@ -24,6 +24,12 @@ use cgmath_culling::{FrustumCuller, BoundingBox, Intersection};
 use vulkano::buffer::CpuAccessibleBuffer;
 use vulkano::pipeline::input_assembly::Index;
 
+mod immutable_mesh_data;
+pub use immutable_mesh_data::*;
+
+mod mutable_mesh_data;
+pub use mutable_mesh_data::*;
+
 #[derive(Default, Copy, Clone)]
 pub struct Vertex3D {
     pub position: [f32; 3], // Vertex position in Model Space
@@ -126,69 +132,13 @@ impl MeshCulling {
 
 }
 
-/// Describes mesh geometry with optional
-/// Should be reused if possible
-pub struct MeshData {
-    vbo: Arc<MeshVBOType>,
-    vbo_slice: Arc<dyn BufferAccess + Send + Sync + 'static>,
-    ibo: Option<Arc<MeshIBOType>>,
-    aabb: MeshCulling, // Rectangle describing model space AABB
-}
-impl MeshData {
-    pub fn from_data(queue: Arc<Queue>, data: Vec<Vertex3D>, indices: Option<Vec<u32>>)
-        -> Arc<dyn MeshAccess + Send + Sync>
-    {
-        let (a, b) = Self::from_data_later(queue, data, indices);
-        b.flush().unwrap();
-        a
-    }
-    pub fn from_data_later(queue: Arc<Queue>, data: Vec<Vertex3D>, indices: Option<Vec<u32>>)
-        -> (Arc<dyn MeshAccess + Send + Sync>, Box<dyn GpuFuture + Send + Sync + 'static>)
-    {
-        let (vbo, vbo_future) = ImmutableBuffer::from_iter(
-            data.iter().cloned(),
-            BufferUsage::vertex_buffer(),
-            queue.clone(),
-        ).unwrap();
-
-        let (ibo, future) = if let Some(idxs) = indices {
-            let (ibo, ibo_future) = ImmutableBuffer::from_iter(
-                idxs.iter().cloned(),
-                BufferUsage::index_buffer(),
-                queue.clone()
-            ).unwrap();
-
-            (
-                Some(ibo as Arc<MeshIBOType>),
-                Box::new(ibo_future.join(vbo_future)) as Box<dyn GpuFuture + Send + Sync>
-            )
-        } else {
-            (None, Box::new(vbo_future) as Box<dyn GpuFuture + Send + Sync>)
-        };
-
-        (Arc::new(MeshData {
-            vbo: vbo.clone(),
-            vbo_slice: Arc::new(vbo.into_buffer_slice()),
-            ibo,
-            aabb: MeshCulling::from_vec(&data)
-        }), future)
-    }
-}
-impl MeshAccess for MeshData {
-    fn visible_in(&self, mat: Matrix4<f32>) -> bool { self.aabb.is_visible_by_matrix(mat) }
-    fn get_vbo(&self) -> Arc<MeshVBOType> { self.vbo.clone() }
-
-    fn has_ibo(&self) -> bool { self.ibo.is_some() }
-    fn get_ibo(&self) -> Arc<MeshIBOType> { self.ibo.as_ref().unwrap().clone() }
-}
-
 /// Draw mode, selected for pipeline, based on amount of textures
 pub enum MaterialDrawMode {
     NoTexture,
     WithDiffuse
 }
 
-/// All kinds of renderer modes use same Matrial structure, just use any
+/// All kinds of renderer modes use same Material structure, just use any
 type MaterialColor = crate::graphics::renderer_3d::geometry_pass::flat_fs::ty::Material;
 
 /// Describes material info and textures
@@ -200,7 +150,9 @@ pub struct MaterialData {
     // Material data
     material_dirty: bool,
     diffuse: [f32; 3],
+    alpha: f32,
     flat_shading: bool,
+    cast_shadow: bool, // Will be visible in shadow map
 
     // Attachment at 0, contains all material data
     material_buffer: Option<Arc<CpuAccessibleBuffer<MaterialColor>>>,
@@ -213,7 +165,9 @@ impl Default for MaterialData {
     fn default() -> Self { Self {
         material_dirty: false,
         diffuse: [1.0; 3],
+        alpha: 1.0,
         flat_shading: true,
+        cast_shadow: true,
 
         recreate: false,
         uniform: None,
@@ -231,19 +185,22 @@ impl MaterialData {
         self.diffuse = [r, g, b];
         self.material_dirty = true;
     }
+    pub fn set_alpha(&mut self, a: f32) {
+        self.alpha = a;
+        self.material_dirty = true;
+    }
     pub fn set_flat_shading(&mut self, flag: bool) {
         self.flat_shading = flag;
         self.material_dirty = true;
     }
-    pub fn set_uv_remap(&mut self, remap: [[f32; 2]; 2]) {
-        self.diffuse_remap = remap;
-    }
+    pub fn set_uv_remap(&mut self, remap: [[f32; 2]; 2]) { self.diffuse_remap = remap; }
+    pub fn set_cast_shadow(&mut self, flag: bool) { self.cast_shadow = flag; }
 
     // Generate MaterialColor structure
     fn get_material_color(&self) -> MaterialColor {
         MaterialColor {
-            _dummy0: [0; 4].into(),
             diffuse: self.diffuse.into(),
+            alpha: self.alpha,
             uv_remap_a: self.diffuse_remap[0],
             uv_remap_b: self.diffuse_remap[1],
             flat_shading: if self.flat_shading { 1 } else { 0 },
@@ -252,6 +209,8 @@ impl MaterialData {
 
     pub fn get_diffuse_remap_a(&self) -> [f32; 2] { self.diffuse_remap[0] }
     pub fn get_diffuse_remap_b(&self) -> [f32; 2] { self.diffuse_remap[1] }
+
+    pub fn is_cast_shadow(&self) -> bool { self.cast_shadow }
 
     // #############
     // Textures

@@ -227,7 +227,7 @@ impl AtlasBuilder {
                 })
                 .collect();
             let dims = solver.solve(&mut rects)?;
-            dbg!((dims, rects))
+            (dims, rects)
         };
         let dim = Dimensions::Dim2d { width: min_dims[0], height: min_dims[1] };
 

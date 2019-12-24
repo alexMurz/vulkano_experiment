@@ -19,7 +19,7 @@ use crate::loader;
 use crate::graphics::{
     renderer_3d::{
         self,
-        mesh::{ Vertex3D, MeshData, ObjectInstance },
+        mesh::{ Vertex3D, ObjectInstance },
     },
     Camera,
 };
